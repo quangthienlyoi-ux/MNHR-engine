@@ -8,9 +8,9 @@
 
 -||BẢN CẬP NHẬT GẦN NHẤT||-
 
-||MNHR-engine (BETA 2)||
+—————MNHR-engine (BETA 2)—————
 
--|— Phiên Bản Này Có Gì —|-
+|— Phiên Bản Này Có Gì —|
 - Animation Thông Minh hơn:
 + Nhân vật & Khối có thể tạo Chuyển động
 - Biến/Var:
@@ -21,7 +21,8 @@
 - Tính Năng Xuất Bản Game Đã Được Thêm:
 + Giờ đây, bạn đã có thể xuất game của mình ra file Zip Độc Lập 🥳
 
--|— Các Tính Năng Có Thể Thêm Vào (BETA 3)—|-
+|— Các Tính Năng Có Thể Thêm Vào (BETA 3)—|
+
 + Fix Lỗi HitBox
 + Khi xuất Game sẽ chuyển đổi từ Xuất tất cả ảnh vào HTML (Base-64) Chuyển sang Assets
 + Fix Lỗi Auto-Save
@@ -32,4 +33,8 @@
 + Tùy Biến Sâu Hơn và Hơn Thế Nữa...
 (Bản quyền thuộc về Meonehero.dev | Vui Lòng không sử dụng Engine với mục đích xấu - Game 18 + & Kinh Dị Quá Mức & Nội Dung Cực Đoan)
 
------© 2026 Meonehero.dev-----
+—————© 2026 Meonehero.dev—————
+
+——————||Realese 1/10/2026||——————
+
+——————||Language: vi-VN||——————
