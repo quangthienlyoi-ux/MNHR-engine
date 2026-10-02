@@ -7,7 +7,9 @@
 - Lưu Ý: Bản phát hành hiện tại là bản Beta - Chưa phải chính thức.
 
 -||BẢN CẬP NHẬT GẦN NHẤT||-
------MNHR-engine (BETA 2)-----
+
+||MNHR-engine (BETA 2)||
+
 -|— Phiên Bản Này Có Gì —|-
 - Animation Thông Minh hơn:
 + Nhân vật & Khối có thể tạo Chuyển động
@@ -29,5 +31,5 @@
 + Cho Phép Lưu file dự án Đuôi .mnhr để tránh mất dữ liệu Project
 + Tùy Biến Sâu Hơn và Hơn Thế Nữa...
 (Bản quyền thuộc về Meonehero.dev | Vui Lòng không sử dụng Engine với mục đích xấu - Game 18 + & Kinh Dị Quá Mức & Nội Dung Cực Đoan)
+
 -----© 2026 Meonehero.dev-----
------||Realese 1/10/2026||-----
