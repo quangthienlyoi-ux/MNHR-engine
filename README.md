@@ -1,14 +1,14 @@
 # MNHR-engine
-||TỔNG QUAN||
+-||TỔNG QUAN||-
 Đây là một dự án Mã Nguồn Mở để tạo một công cụ (tools) engine (Low Code) giúp làm Game 2D
 - Được Tạo Bởi AI: Deepseek
 - Có sẵn các tính năng cơ bản của một Engine
 - Project ban đầu tên là MiniEngine (Deepseek tự đặt tên)
 - Lưu Ý: Bản phát hành hiện tại là bản Beta - Chưa phải chính thức.
 
-||BẢN CẬP NHẬT GẦN NHẤT||
-—————MNHR-engine (BETA 2)—————
-|— Phiên Bản Này Có Gì —|
+-||BẢN CẬP NHẬT GẦN NHẤT||-
+-—————MNHR-engine (BETA 2)—————-
+-|— Phiên Bản Này Có Gì —|-
 - Animation Thông Minh hơn:
 + Nhân vật & Khối có thể tạo Chuyển động
 - Biến/Var:
@@ -19,7 +19,7 @@
 - Tính Năng Xuất Bản Game Đã Được Thêm:
 + Giờ đây, bạn đã có thể xuất game của mình ra file Zip Độc Lập 🥳
 
-|— Các Tính Năng Có Thể Thêm Vào (BETA 3)—|
+-|— Các Tính Năng Có Thể Thêm Vào (BETA 3)—|-
 + Fix Lỗi HitBox
 + Khi xuất Game sẽ chuyển đổi từ Xuất tất cả ảnh vào HTML (Base-64) Chuyển sang Assets
 + Fix Lỗi Auto-Save
@@ -29,5 +29,5 @@
 + Cho Phép Lưu file dự án Đuôi .mnhr để tránh mất dữ liệu Project
 + Tùy Biến Sâu Hơn và Hơn Thế Nữa...
 (Bản quyền thuộc về Meonehero.dev | Vui Lòng không sử dụng Engine với mục đích xấu - Game 18 + & Kinh Dị Quá Mức & Nội Dung Cực Đoan)
-—————© 2026 Meonehero.dev—————
-——————||Realese 1/10/2026||——————
+-—————© 2026 Meonehero.dev—————-
+-——————||Realese 1/10/2026||——————-
