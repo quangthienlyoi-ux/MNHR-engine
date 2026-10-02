@@ -58,9 +58,9 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0d12;color:#e6e9ef;
   background:rgba(0,0,0,.5);padding:4px 8px;border-radius:6px;display:none;}
 .panmode #camInfo{display:block;}
 .panmode #stage{cursor:grab;}
-#inspector{width:252px;flex:0 0 252px;background:#12151d;border-left:1px solid #232838;
+#inspector{width:268px;flex:0 0 268px;background:#12151d;border-left:1px solid #232838;
   overflow-y:auto;padding:8px;transition:margin-right .2s;}
-#inspector.hidden{margin-right:-252px;}
+#inspector.hidden{margin-right:-268px;}
 #inspector::-webkit-scrollbar{width:5px;}
 #inspector::-webkit-scrollbar-thumb{background:#2c3446;border-radius:3px;}
 .tabs{display:flex;gap:4px;margin-bottom:8px;}
@@ -123,6 +123,8 @@ select.inp{appearance:none;
   background:#1e3a5c;border:1px solid #2f5f8a;font-size:10px;display:flex;align-items:center;justify-content:center;}
 .layer-card .bot{position:absolute;bottom:-5px;left:-5px;width:18px;height:18px;border-radius:50%;
   background:#3a1e2c;border:1px solid #7a2c4a;font-size:9px;display:flex;align-items:center;justify-content:center;}
+.layer-card .ev{position:absolute;bottom:-5px;right:-5px;width:18px;height:18px;border-radius:50%;
+  background:#3a2a10;border:1px solid #8a6a1f;font-size:10px;display:flex;align-items:center;justify-content:center;}
 .layer-add{flex:0 0 auto;width:62px;height:62px;border-radius:11px;background:#161b26;
   border:2px dashed #2c3446;color:#4f5f78;font-size:22px;display:flex;align-items:center;
   justify-content:center;cursor:pointer;}
@@ -130,7 +132,7 @@ select.inp{appearance:none;
   align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(4px);}
 .modal.show{display:flex;}
 .modal-box{background:#161b26;border:1px solid #2c3446;border-radius:14px;padding:18px;
-  max-width:680px;width:100%;max-height:88vh;overflow-y:auto;
+  max-width:700px;width:100%;max-height:88vh;overflow-y:auto;
   box-shadow:0 20px 60px rgba(0,0,0,.7);}
 .modal-box h3{margin:0 0 8px;font-size:15px;color:#ffb86b;}
 .modal-box p{font-size:12.5px;color:#a8b6cc;margin:0 0 14px;line-height:1.6;}
@@ -168,6 +170,36 @@ select.inp{appearance:none;
 #exportResultModal .code-wrap{display:none;margin-top:10px;}
 #exportResultModal .code-wrap.show{display:block;}
 #exportResultModal textarea{min-height:280px;}
+#hitboxWrap{position:relative;background:#0d1017;border:1px solid #262d3f;border-radius:9px;
+  padding:12px;text-align:center;overflow:auto;min-height:180px;max-height:52vh;}
+#hitboxCanvas{display:block;margin:0 auto;cursor:crosshair;image-rendering:pixelated;
+  background:#151a24 repeating-conic-gradient(#1b2130 0% 25%,#151a24 0% 50%) 50%/12px 12px;
+  touch-action:none;border-radius:6px;box-shadow:0 0 0 1px #2b3346;}
+.hitbox-list{margin-top:10px;max-height:90px;overflow-y:auto;background:#0d1017;
+  border:1px solid #262d3f;border-radius:8px;padding:6px;font-size:11px;color:#a8b6cc;}
+.hitbox-list .hb-row{display:flex;justify-content:space-between;align-items:center;
+  padding:3px 4px;border-radius:4px;}
+.hitbox-list .hb-row:nth-child(odd){background:rgba(255,255,255,.02);}
+.hitbox-list .hb-row .hb-del{color:#ff8fa3;cursor:pointer;font-weight:800;padding:0 4px;}
+
+/* ---------- Event card ---------- */
+.event-card{background:#0d1017;border:1px solid #2a3548;border-radius:10px;padding:9px;
+  margin-bottom:9px;position:relative;box-shadow:0 0 0 1px rgba(124,92,255,.08);}
+.event-card .ev-head{display:flex;gap:6px;align-items:center;margin-bottom:6px;}
+.event-card .ev-head .ev-num{font-size:10px;font-weight:800;color:#7c5cff;
+  background:#1a2030;border-radius:5px;padding:3px 6px;flex:0 0 auto;}
+.event-card .ev-head select{flex:1;min-width:0;}
+.event-card .ev-del{background:#2a1420;border:1px solid #4a1f2c;color:#ff8fa3;
+  border-radius:6px;padding:4px 7px;font-size:11px;font-weight:800;cursor:pointer;
+  flex:0 0 auto;line-height:1;}
+.event-card .ev-del:active{transform:scale(.93);}
+.event-card .ev-sub{font-size:9px;color:#6d7f99;margin:8px 0 4px;letter-spacing:.8px;
+  text-transform:uppercase;font-weight:800;}
+.event-card .ev-row{display:flex;align-items:center;gap:6px;margin-bottom:5px;}
+.event-card .ev-row > span{flex:0 0 74px;font-size:11px;color:#8fa3c0;}
+.event-card .ev-hint{font-size:10px;color:#6d7f99;line-height:1.5;padding:6px 8px;
+  background:rgba(124,92,255,.06);border-radius:6px;margin-top:6px;border-left:2px solid #7c5cff;}
+
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(120%);
   background:#1c2230;border:1px solid #2c3446;color:#dbe3ef;padding:10px 18px;
   border-radius:10px;font-size:12.5px;font-weight:600;z-index:2000;
@@ -230,14 +262,47 @@ select.inp{appearance:none;
   <footer id="layers"></footer>
 </div>
 
+<!-- Hitbox editor modal -->
+<div id="hitboxModal" class="modal">
+  <div class="modal-box" style="max-width:780px;">
+    <h3 id="hitboxTitle">🎯 Chỉnh Hitbox</h3>
+    <p>Vẽ các hình chữ nhật để định nghĩa hitbox. Hoặc dùng <b>Auto-detect PNG</b> (áp dụng cho tất cả frames của item).</p>
+    <div id="hitboxWrap">
+      <canvas id="hitboxCanvas" width="400" height="300"></canvas>
+    </div>
+    <div id="hitboxList" class="hitbox-list"></div>
+    <div class="modal-actions" style="margin-top:10px;justify-content:flex-start;flex-wrap:wrap;gap:8px;align-items:center;">
+      <button id="btnHitboxAuto" class="btn accent">🪄 Auto-detect PNG</button>
+      <button id="btnHitboxFull" class="btn">⬛ Full box</button>
+      <button id="btnHitboxClear" class="btn danger">🗑 Xoá tất cả</button>
+      <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#8fa3c0;cursor:pointer;">
+        <input id="hitboxAllFrames" type="checkbox" checked
+          style="accent-color:#7c5cff;width:16px;height:16px;">
+        Áp dụng cho tất cả frames
+      </label>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+      <span style="font-size:11px;color:#8fa3c0;">Cell size:</span>
+      <input id="hitboxCell" type="number" class="inp" value="16" min="2" max="128" style="width:70px;">
+      <span style="font-size:11px;color:#8fa3c0;">Alpha &gt;</span>
+      <input id="hitboxAlpha" type="number" class="inp" value="10" min="0" max="255" style="width:70px;">
+      <span style="font-size:11px;color:#6d7f99;" id="hitboxInfo"></span>
+    </div>
+    <div class="modal-actions">
+      <button id="btnHitboxCancel" class="btn">Huỷ</button>
+      <button id="btnHitboxDone" class="btn primary">✓ Lưu hitbox</button>
+    </div>
+  </div>
+</div>
+
 <!-- Animation editor modal -->
 <div id="animModal" class="modal">
   <div class="modal-box">
     <h3 id="animTitle">🎞️ Animation</h3>
-    <p id="animHint">Thêm từng frame ảnh (1 frame mỗi lần) hoặc import spritesheet. FPS mặc định 8.</p>
+    <p id="animHint">Thêm từng frame ảnh hoặc import spritesheet. FPS mặc định là 8.</p>
     <div id="animFrames" class="frames"></div>
     <div class="modal-actions" style="margin-top:6px;">
-      <button id="btnAddFrame" class="btn accent">＋ Thêm 1 frame</button>
+      <button id="btnAddFrames" class="btn accent">＋ Thêm frame</button>
       <button id="btnImportSheet" class="btn">📄 Spritesheet</button>
       <button id="btnReverseFrames" class="btn">↔ Đảo</button>
       <button id="btnClearFrames" class="btn danger">🗑 Xoá hết</button>
@@ -274,8 +339,7 @@ select.inp{appearance:none;
 <div id="exportModal" class="modal">
   <div class="modal-box">
     <h3>📦 Xuất game</h3>
-    <p>Bạn có muốn thêm <b>điều khiển tùy chỉnh</b> (JS) vào game xuất ra không?
-       Nếu không, game sẽ dùng đúng UI bạn đã thiết kế trong tab 🎨 UI.</p>
+    <p>Bạn có muốn thêm <b>điều khiển tùy chỉnh</b> (JS) vào game xuất ra không?</p>
     <div class="modal-actions">
       <button id="btnNoCustom" class="btn">Không, dùng UI hiện tại</button>
       <button id="btnYesCustom" class="btn accent">Có, thêm JS điều khiển</button>
@@ -309,10 +373,7 @@ if (keys['z'] || keys['Z']) keys['Fire'] = true;"></textarea>
       <button id="btnResClose" class="btn">Đóng</button>
     </div>
     <div id="resCodeWrap" class="code-wrap">
-      <p class="hint" style="margin-bottom:6px;">
-        Nếu tải ZIP không hoạt động: sao chép toàn bộ HTML dưới đây, dán vào file
-        <code>index.html</code>, rồi mở bằng trình duyệt. Game chạy y hệt preview.
-      </p>
+      <p class="hint" style="margin-bottom:6px;">Copy toàn bộ HTML dưới, lưu thành <code>index.html</code>, mở bằng trình duyệt.</p>
       <textarea id="resCode" readonly spellcheck="false"></textarea>
       <div class="modal-actions">
         <button id="btnResSelectAll" class="btn">Chọn tất cả</button>
