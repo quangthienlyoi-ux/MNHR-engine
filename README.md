@@ -1,5 +1,5 @@
 # MNHR-engine
--||TỔNG QUAN||-
+## TỔNG QUAN
 Đây là một dự án Mã Nguồn Mở để tạo một công cụ (tools) engine (Low Code) giúp làm Game 2D
 - Được Tạo Bởi AI: Deepseek
 - Có sẵn các tính năng cơ bản của một Engine
@@ -7,11 +7,7 @@
 - Lưu Ý: Bản phát hành hiện tại là bản Beta - Chưa phải chính thức.
 
 
--||BẢN CẬP NHẬT GẦN NHẤT||-
-
-—————MNHR-engine (BETA 2)—————
-
-## Phiên Bản Này Có Gì
+## Phiên Bản Này Có Gì [MNHR-engine BETA 2]
 ## Animation Thông Minh hơn:
 + Nhân vật & Khối có thể tạo Chuyển động
 - Biến/Var:
