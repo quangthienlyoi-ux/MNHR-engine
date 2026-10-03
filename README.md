@@ -11,19 +11,18 @@
 
 —————MNHR-engine (BETA 2)—————
 
-|— Phiên Bản Này Có Gì —|
-- Animation Thông Minh hơn:
+## Phiên Bản Này Có Gì
+## Animation Thông Minh hơn:
 + Nhân vật & Khối có thể tạo Chuyển động
 - Biến/Var:
 + Giờ đây, bạn có thể thêm biến vào Nhân Vật Của Mình
-- HitBox Thông Minh:
+## HitBox Thông Minh:
 + Engine có thể tự động tạo 1 vùng HitBox dựa trên Ảnh Nền Trong Suốt PNG
 + Còn 1 Bug về HitBox chưa được Fix
-- Tính Năng Xuất Bản Game Đã Được Thêm:
+## Tính Năng Xuất Bản Game Đã Được Thêm:
 + Giờ đây, bạn đã có thể xuất game của mình ra file Zip Độc Lập 🥳
 
-|— Các Tính Năng Có Thể Thêm Vào (BETA 3)—|
-
+## Các Tính Năng Có Thể Thêm Vào (BETA 3)
 + Fix Lỗi HitBox
 + Khi xuất Game sẽ chuyển đổi từ Xuất tất cả ảnh vào HTML (Base-64) Chuyển sang Assets
 + Fix Lỗi Auto-Save
@@ -32,10 +31,21 @@
 + Tùy chỉnh Độ Phân Giải & FPS tối đa khi xuất Game
 + Cho Phép Lưu file dự án Đuôi .mnhr để tránh mất dữ liệu Project
 + Tùy Biến Sâu Hơn và Hơn Thế Nữa...
-(Bản quyền thuộc về Meonehero.dev | Vui Lòng không sử dụng Engine với mục đích xấu - Game 18 + & Kinh Dị Quá Mức & Nội Dung Cực Đoan)
+
+## Credit & Bổ Sung Tính năng
+- Link trải nghiệm Online [DEMO link]:
+|| https://quangthienlyoi-ux.github.io/MNHR-engine/ ||
+- Cách Tải về & Sử dụng:
++ Bạn có thể thấy mục Release để Tải Xuống hoặc Link Online để Sử dụng Engine Online
+- License: Giấy Phép MIT
+- Yêu cầu Hệ Thống:
++ Khuyến Khích Android 5 trở lên
++ Sử dụng Trình Duyệt Chrome hoặc TD khác
++ Cấu hình 4GB RAM trở lên
+[—Made with DeepSeek—]
 
 —————© 2026 Meonehero.dev—————
 
-——————||Realese 1/10/2026||——————
+————||Release BETA 1/10/2026||————
 
-——————||Language: vi-VN||——————
+—————||Prototype - 27/9/2026||—————
