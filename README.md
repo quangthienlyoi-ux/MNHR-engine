@@ -7,4 +7,4 @@
 - Lưu Ý: Bản phát hành hiện tại là bản Beta - Chưa phải chính thức.
 
 
-Bản BETA 3 đã ra mắt, nhưng tôi chưa kịp viết README và Up bản Release =((
+Dự Án Bị Tạm Dừng Vì Lý Do: Lười, dự án sẽ được restart vào thời gian tới
