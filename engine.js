@@ -1,5 +1,5 @@
 /* ============================================================
-   MNHR-engine — engine.js v7
+   MNHR-engine — engine.js Alpha 7.5
    Auto-detect đa frame + Hệ thống Biến (Events)
    ============================================================ */
 window.MNHR = (function () {
@@ -39,10 +39,19 @@ function MiniRuntime() {
     if (!an || !an.frames || !an.frames.length) return null;
     return an.frames[(it._animFrame || 0) % an.frames.length] || null;
   }
+  function cleanList(L) {   // hitbox hỏng (NaN / kích thước <= 0) không được làm nhân vật xuyên map
+    for (let i = 0; i < L.length; i++) {
+      const h = L[i];
+      if (!isFinite(h.ox) || !isFinite(h.oy) || !(h.w > 0) || !(h.h > 0)) {
+        return L.map(b => ({ ox: +b.ox || 0, oy: +b.oy || 0, w: Math.max(1, +b.w || 1), h: Math.max(1, +b.h || 1) }));
+      }
+    }
+    return L;
+  }
   function hbList(it) {
     const f = frameOf(it);
-    if (f && f.hitboxes && f.hitboxes.length) return f.hitboxes;
-    return (it.hitboxes && it.hitboxes.length) ? it.hitboxes : null;
+    if (f && f.hitboxes && f.hitboxes.length) return cleanList(f.hitboxes);
+    return (it.hitboxes && it.hitboxes.length) ? cleanList(it.hitboxes) : null;
   }
   function faceOf(it) { return it.kind === 'sprite' && it._facing < 0 ? -1 : 1; }
   function getHitboxes(it) {
@@ -97,6 +106,144 @@ function MiniRuntime() {
     return best ? { pair: best, depth: bestDepth } : null;
   }
 
+  /* ---------- AN TOÀN / THÂN VA CHẠM ---------- */
+  function safeDraw(ctx, img, ...a) {
+    if (!img || img.complete === false || img.naturalWidth === 0) return false;
+    try { ctx.drawImage(img, ...a); return true; } catch (e) { return false; }
+  }
+  /* Hộp va chạm địa hình: KHÔNG phụ thuộc frame/animation → hết kẹt khi đổi frame (hitbox theo frame chỉ dùng cho sát thương/chạm) */
+  function bodyBoxes(it) {
+    if (it.kind !== 'sprite') return getHitboxes(it);
+    const fx = faceOf(it);
+    if (it.hitboxes && it.hitboxes.length) {
+      return cleanList(it.hitboxes).map(h => ({ x: it.x + h.ox * fx - h.w / 2, y: it.y + h.oy - h.h / 2, w: h.w, h: h.h }));
+    }
+    if (it.hb) return [{ x: it.x + it.hb.ox * fx - it.hb.hw, y: it.y + it.hb.oy - it.hb.hh, w: it.hb.hw * 2, h: it.hb.hh * 2 }];
+    return [{ x: it.x - it.w / 2, y: it.y - it.h / 2, w: it.w, h: it.h }];
+  }
+  /* Đẩy nhân vật ra khỏi khối đặc theo trục nông nhất (lật hướng, đổi frame khối, spawn trong khối) */
+  function depenetrate(state, it) {
+    for (let iter = 0; iter < 4; iter++) {
+      const mine = bodyBoxes(it);
+      let fixed = false;
+      for (let i = 0; i < state.items.length && !fixed; i++) {
+        const o = state.items[i];
+        if (o === it || o.kind !== 'block' || !o.solid || o._dead) continue;
+        const ob = getHitboxes(o);
+        for (let a = 0; a < mine.length && !fixed; a++) {
+          for (let b = 0; b < ob.length; b++) {
+            const A = mine[a], B = ob[b];
+            if (!aabb(A, B)) continue;
+            const px = Math.min(A.x + A.w - B.x, B.x + B.w - A.x);
+            const py = Math.min(A.y + A.h - B.y, B.y + B.h - A.y);
+            if (px < py) {
+              const s = (A.x + A.w / 2 < B.x + B.w / 2) ? -1 : 1;
+              it.x += s * Math.min(px, 32);
+              if (it._vx * s < 0) it._vx = 0;
+            } else {
+              const s = (A.y + A.h / 2 < B.y + B.h / 2) ? -1 : 1;
+              it.y += s * Math.min(py, 32);
+              if (s < 0) { it._onGround = true; if (it._vy > 0) it._vy = 0; }
+              else if (it._vy < 0) it._vy = 0;
+            }
+            fixed = true; break;
+          }
+        }
+      }
+      if (!fixed) return;
+    }
+  }
+  function killY(state) {
+    let m = VH;
+    for (const o of state.items) if (o.kind === 'block' && !o._dead) m = Math.max(m, o.y + o.h / 2);
+    return m + 500;
+  }
+  function respawnItem(it) {
+    it.x = isFinite(it._spawnX) ? it._spawnX : VW / 2;
+    it.y = isFinite(it._spawnY) ? it._spawnY : 0;
+    it._vx = 0; it._vy = 0;
+  }
+
+  /* ---------- BIẾN / ĐIỀU KIỆN ---------- */
+  function getVar(state, it, name) {
+    switch (name) {
+      case 'hp': return it.hp;
+      case 'maxHp': return it.maxHp;
+      case 'hpPercent': return it.maxHp ? it.hp / it.maxHp * 100 : 0;
+      case 'x': return it.x;
+      case 'y': return it.y;
+      case 'time': return state.time || 0;
+    }
+    const v = state.vars ? state.vars[name] : undefined;
+    return v === undefined ? 0 : v;
+  }
+  function cmpVals(a, op, b) {
+    const na = typeof a === 'number' ? a : parseFloat(a), nb = typeof b === 'number' ? b : parseFloat(b);
+    const num = isFinite(na) && isFinite(nb);
+    const x = num ? na : String(a), y = num ? nb : String(b);
+    switch (op) {
+      case '!=': return x !== y;
+      case '>': return x > y;
+      case '<': return x < y;
+      case '>=': return x >= y;
+      case '<=': return x <= y;
+      default: return x === y;
+    }
+  }
+  function condPass(state, it, c) {
+    if (!c || !c.var) return true;
+    const rhs = (typeof c.value === 'string' && c.value.charAt(0) === '$') ? getVar(state, it, c.value.slice(1)) : c.value;
+    return cmpVals(getVar(state, it, c.var), c.op || '==', rhs);
+  }
+  function initVars(defs) {
+    const v = {};
+    (defs || []).forEach(d => {
+      if (!d || !d.name) return;
+      const s = String(d.value != null ? d.value : '0').trim();
+      v[d.name] = /^-?\d+(\.\d+)?$/.test(s) ? parseFloat(s) : s;
+    });
+    return v;
+  }
+  /* tham số "$tên" = giá trị biến lúc chạy; text có thể chứa {tênBiến} */
+  function resolveParams(state, it, params) {
+    const out = {};
+    for (const k in (params || {})) {
+      let v = params[k];
+      if (typeof v === 'string') {
+        if (k === 'text') {
+          v = v.replace(/\{([^}]+)\}/g, (m, n) => {
+            const x = getVar(state, it, n.trim());
+            return typeof x === 'number' ? String(Math.round(x * 100) / 100) : String(x);
+          });
+        } else if (v.charAt(0) === '$') {
+          const x = getVar(state, it, v.slice(1));
+          v = typeof x === 'number' ? x : (isFinite(parseFloat(x)) ? parseFloat(x) : 0);
+        }
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+  function evPass(state, it, ev) {
+    const m = it._evMeta || (it._evMeta = {});
+    const s = m[ev.id] || (m[ev.id] = { n: 0, cd: 0 });
+    if (ev.once && s.n > 0) return false;
+    if (s.cd > 0) return false;
+    if (ev.cond && !condPass(state, it, ev.cond)) return false;
+    if (ev.chance != null && ev.chance < 100 && Math.random() * 100 >= ev.chance) return false;
+    s.n++; s.cd = ev.cooldown > 0 ? ev.cooldown : 0;
+    return true;
+  }
+  function nearPlayer(state, it, dist) {
+    for (let j = 0; j < state.items.length; j++) {
+      const o = state.items[j];
+      if (o === it || o.kind !== 'sprite' || o.control !== 'player' || o._dead) continue;
+      const dx = o.x - it.x, dy = o.y - it.y;
+      if (dx * dx + dy * dy <= dist * dist) return true;
+    }
+    return false;
+  }
+
   /* ---------- EVENTS ---------- */
   function ensureEventState(state, it) {
     if (!it._pendingActions) it._pendingActions = [];
@@ -104,39 +251,30 @@ function MiniRuntime() {
     if (!it._keyState) it._keyState = {};
     if (!it._idleFired) it._idleFired = {};
     if (!it._touchSet) it._touchSet = new Set();
+    if (!it._varState) it._varState = {};
+    if (!it._nearEv) it._nearEv = {};
+    if (!it._evMeta) it._evMeta = {};
   }
-  function scheduleEventAction(it, ev) {
+  function scheduleEventAction(state, it, ev) {
+    if (!evPass(state, it, ev)) return;
     if (!it._pendingActions) it._pendingActions = [];
+    if (it._pendingActions.length > 200) return;   // chống tràn hàng đợi
     it._pendingActions.push({
       action: ev.action,
       actionParams: ev.actionParams || {},
       timeLeft: Math.max(0, ev.delay || 0)
     });
   }
-  function fireEvent(state, it, triggerKey, extra) {
+  function fireEvent(state, it, triggerKey) {
     if (!it.events || !it.events.length) return;
     for (let i = 0; i < it.events.length; i++) {
-      const ev = it.events[i];
-      if (ev.trigger !== triggerKey) continue;
-      const tp = ev.triggerParams || {};
-      if (triggerKey === 'onNearPlayer') {
-        const dist = tp.distance != null ? tp.distance : 100;
-        let found = false;
-        for (let j = 0; j < state.items.length; j++) {
-          const o = state.items[j];
-          if (o === it || o.kind !== 'sprite') continue;
-          if (o.control !== 'player' || o._dead) continue;
-          const dx = o.x - it.x, dy = o.y - it.y;
-          if (Math.sqrt(dx*dx + dy*dy) <= dist) { found = true; break; }
-        }
-        if (!found) continue;
-      }
-      scheduleEventAction(it, ev);
+      if (it.events[i].trigger === triggerKey) scheduleEventAction(state, it, it.events[i]);
     }
   }
   function updateTimedEvents(state, it, dt) {
     if (!it.events || !it.events.length) return;
     ensureEventState(state, it);
+    for (const k in it._evMeta) if (it._evMeta[k].cd > 0) it._evMeta[k].cd -= dt;
     for (let i = 0; i < it.events.length; i++) {
       const ev = it.events[i];
       const tp = ev.triggerParams || {};
@@ -145,25 +283,40 @@ function MiniRuntime() {
         it._everyTimers[ev.id] = (it._everyTimers[ev.id] || 0) + dt;
         if (it._everyTimers[ev.id] >= interval) {
           it._everyTimers[ev.id] -= interval;
-          scheduleEventAction(it, ev);
+          scheduleEventAction(state, it, ev);
         }
       } else if (ev.trigger === 'onKeyPress') {
-        const k = tp.key;
+        const k = tp.key, mode = tp.mode || 'press';
         const was = !!it._keyState[ev.id];
         const now = !!(k && state.keys[k]);
-        if (now && !was) scheduleEventAction(it, ev);
+        if (mode === 'release') { if (!now && was) scheduleEventAction(state, it, ev); }
+        else if (mode === 'hold') {
+          if (now) {
+            const t = (it._everyTimers[ev.id] || 0) + dt, r = Math.max(0.05, tp.repeat || 0.2);
+            if (!was || t >= r) { scheduleEventAction(state, it, ev); it._everyTimers[ev.id] = 0; }
+            else it._everyTimers[ev.id] = t;
+          }
+        } else if (now && !was) scheduleEventAction(state, it, ev);
         it._keyState[ev.id] = now;
       } else if (ev.trigger === 'onHpBelow') {
         const thr = (tp.percent != null ? tp.percent : 50) / 100 * it.maxHp;
         const prev = it._prevHp != null ? it._prevHp : it.hp;
-        if (it.hp <= thr && prev > thr) scheduleEventAction(it, ev);
+        if (it.hp <= thr && prev > thr) scheduleEventAction(state, it, ev);
       } else if (ev.trigger === 'onIdle') {
         const secs = tp.seconds != null ? tp.seconds : 2;
         if (it._state === 'idle' && (it._idleTime || 0) >= secs) {
-          if (!it._idleFired[ev.id]) { it._idleFired[ev.id] = true; scheduleEventAction(it, ev); }
+          if (!it._idleFired[ev.id]) { it._idleFired[ev.id] = true; scheduleEventAction(state, it, ev); }
         } else if (it._state !== 'idle') {
           it._idleFired[ev.id] = false;
         }
+      } else if (ev.trigger === 'onNearPlayer') {
+        const near = nearPlayer(state, it, tp.distance != null ? tp.distance : 100);
+        if (near && !it._nearEv[ev.id]) scheduleEventAction(state, it, ev);
+        it._nearEv[ev.id] = near;
+      } else if (ev.trigger === 'onVar') {
+        const ok = condPass(state, it, { var: tp.name, op: tp.op, value: tp.value });
+        if (ok && !it._varState[ev.id]) scheduleEventAction(state, it, ev);
+        it._varState[ev.id] = ok;
       }
     }
     it._prevHp = it.hp;
@@ -180,7 +333,7 @@ function MiniRuntime() {
     }
   }
   function executeAction(state, it, action, params) {
-    params = params || {};
+    params = resolveParams(state, it, params);
     switch (action) {
       case 'shakeScreen':
         state.shakeScreen = {
@@ -190,27 +343,31 @@ function MiniRuntime() {
         };
         break;
       case 'changeHp': {
-        const amt = params.amount != null ? params.amount : 0;
+        let amt = Number(params.amount); if (!isFinite(amt)) amt = 0;
+        if (params.mode === 'percent') amt = it.maxHp * amt / 100;
         if (amt < 0) damage(state, it, -amt);
         else it.hp = Math.min(it.maxHp, it.hp + amt);
         break;
       }
       case 'teleport':
-        it.x += params.dx || 0;
-        it.y += params.dy || 0;
+        if (isFinite(+params.dx)) it.x += +params.dx;
+        if (isFinite(+params.dy)) it.y += +params.dy;
         break;
       case 'setPos':
-        if (params.x != null) it.x = params.x;
-        if (params.y != null) it.y = params.y;
+        if (params.x != null && isFinite(+params.x)) it.x = +params.x;
+        if (params.y != null && isFinite(+params.y)) it.y = +params.y;
         break;
       case 'spawnBullet':
-        if (it.shoot && it.shoot.enabled) spawnBullet(state, it, it._facing || 1);
+        if (it.shoot && it.shoot.enabled) {
+          const n = clamp(Math.round(params.count || 1), 1, 12), sp = (params.spread || 0) * Math.PI / 180;
+          for (let k = 0; k < n; k++) spawnBullet(state, it, it._facing || 1, n > 1 ? (k - (n - 1) / 2) * (sp / (n - 1)) : 0);
+        }
         break;
       case 'setInvuln':
         it._invuln = Math.max(it._invuln || 0, params.seconds != null ? params.seconds : 1);
         break;
       case 'destroySelf':
-        it._dead = true;
+        it._dead = true; if (it.kind === 'sprite') it.hp = 0;
         break;
       case 'changeControl':
         it.control = params.mode || it.control;
@@ -251,7 +408,8 @@ function MiniRuntime() {
         try {
           const AC = window.AudioContext || window.webkitAudioContext;
           if (AC) {
-            const audio = new AC();
+            const audio = state._ac || (state._ac = new AC());
+            if (audio.state === 'suspended' && audio.resume) audio.resume();
             const osc = audio.createOscillator();
             const gain = audio.createGain();
             osc.type = params.wave || 'sine';
@@ -282,6 +440,27 @@ function MiniRuntime() {
           mult: params.multiplier != null ? params.multiplier : 1.5,
           timeLeft: params.duration != null ? params.duration : 3
         };
+        break;
+      case 'setVar': {
+        const name = String(params.name || '').trim();
+        if (!name) break;
+        const vars = state.vars || (state.vars = {});
+        const cur = parseFloat(vars[name]), cn = isFinite(cur) ? cur : 0;
+        const n = parseFloat(params.value), mode = params.mode || 'set';
+        if (mode === 'toggle') vars[name] = cn ? 0 : 1;
+        else if (mode === 'rand') vars[name] = Math.floor(Math.random() * (isFinite(n) ? n : 1));
+        else if (isFinite(n)) vars[name] = mode === 'add' ? cn + n : mode === 'sub' ? cn - n : mode === 'mul' ? cn * n : n;
+        else vars[name] = params.value;
+        break;
+      }
+      case 'setHp': {
+        const v = Number(params.amount);
+        if (isFinite(v)) it.hp = clamp(v, 0, it.maxHp);
+        if (it.hp <= 0 && !it._dead) { it._dead = true; fireEvent(state, it, 'onDeath'); }
+        break;
+      }
+      case 'respawn':
+        respawnItem(it);
         break;
       case 'setCameraTarget':
         for (let i = 0; i < state.items.length; i++) {
@@ -330,36 +509,35 @@ function MiniRuntime() {
   }
 
   function resolveCollisions(state, it, axis) {
-    const myBoxes = getHitboxes(it);
+    let mine = bodyBoxes(it);
     for (let i = 0; i < state.items.length; i++) {
       const other = state.items[i];
-      if (other === it || other.kind !== 'block') continue;
-      const otherBoxes = getHitboxes(other);
-      const hit = anyHitboxOverlap(myBoxes, otherBoxes);
-      if (!hit) continue;
-      if (other.hazard && it.hp > 0) damage(state, it, 10);
-      if (!other.solid) continue;
+      if (other === it || other.kind !== 'block' || other._dead) continue;
+      const ob = getHitboxes(other);
+      if (other.hazard && it.hp > 0 && anyHitboxOverlap(getHitboxes(it), ob)) damage(state, it, 10);
+      if (!other.solid || !anyHitboxOverlap(mine, ob)) continue;
       if (axis === 'x') {
         if (it._vx > 0) {
-          const d = deepestHitboxPair(myBoxes, otherBoxes, 'x', 1);
-          if (d) it.x -= d.depth;
+          const d = deepestHitboxPair(mine, ob, 'x', 1);
+          if (d) it.x -= Math.min(d.depth, 24);
           it._vx = 0;
         } else if (it._vx < 0) {
-          const d = deepestHitboxPair(myBoxes, otherBoxes, 'x', -1);
-          if (d) it.x += d.depth;
+          const d = deepestHitboxPair(mine, ob, 'x', -1);
+          if (d) it.x += Math.min(d.depth, 24);
           it._vx = 0;
         }
       } else {
         if (it._vy > 0) {
-          const d = deepestHitboxPair(myBoxes, otherBoxes, 'y', 1);
-          if (d) it.y -= d.depth;
+          const d = deepestHitboxPair(mine, ob, 'y', 1);
+          if (d) it.y -= Math.min(d.depth, 24);
           it._vy = 0; it._onGround = true;
         } else if (it._vy < 0) {
-          const d = deepestHitboxPair(myBoxes, otherBoxes, 'y', -1);
-          if (d) it.y += d.depth;
+          const d = deepestHitboxPair(mine, ob, 'y', -1);
+          if (d) it.y += Math.min(d.depth, 24);
           it._vy = 0;
         }
       }
+      mine = bodyBoxes(it);
     }
   }
 
@@ -373,10 +551,11 @@ function MiniRuntime() {
       default: return { dx: f, dy: 0 };
     }
   }
-  function spawnBullet(state, it, facing) {
+  function spawnBullet(state, it, facing, rot) {
     const s = it.shoot;
     if (!s || !s.enabled) return;
     const d = bulletDir(s.dir, facing), spd = s.speed || 8;
+    if (rot) { const c = Math.cos(rot * facing), sn = Math.sin(rot * facing), nx = d.dx * c - d.dy * sn; d.dy = d.dx * sn + d.dy * c; d.dx = nx; }
     const w = s.bulletW || 14, h = s.bulletH || 14;
     const ang = Math.atan2(d.dy, Math.abs(d.dx));
     const ca = Math.abs(Math.cos(ang)), sa = Math.abs(Math.sin(ang));
@@ -388,7 +567,7 @@ function MiniRuntime() {
       w, h, cw: w * ca + h * sa, ch: w * sa + h * ca, ang,
       damage: s.damage || 10,
       owner: it.id, anim: (an && an.frames && an.frames.length) ? an : null, t: 0,
-      life: 5, facing,
+      life: 5, facing: d.dx < -0.001 ? -1 : (d.dx > 0.001 ? 1 : facing),
       useGravity: !!s.useGravity,
       bulletGravity: s.bulletGravity != null ? s.bulletGravity : 5
     });
@@ -468,10 +647,13 @@ function MiniRuntime() {
   }
 
   function updateItem(state, it, dt, keys) {
+    if (!isFinite(dt) || dt < 0) dt = 0;
+    if (dt > 0.05) dt = 0.05;
     if (it._shootCd > 0) it._shootCd -= dt;
     if (it._shootAnimTime > 0) it._shootAnimTime -= dt;
 
     // onStart (one shot)
+    if (it._spawnX == null) { it._spawnX = it.x; it._spawnY = it.y; }
     if (!it._startFired) {
       it._startFired = true;
       fireEvent(state, it, 'onStart');
@@ -494,7 +676,7 @@ function MiniRuntime() {
     if (it._invuln > 0) { it._invuln -= dt; if (it._invuln < 0) it._invuln = 0; }
 
     const speedMult = it._speedBuff ? it._speedBuff.mult : 1;
-    const gravMult  = it._gravityBuff ? it._gravityBuff.mult : it.gravity;
+    const gravMult  = it._gravityBuff ? it._gravityBuff.mult : (isFinite(it.gravity) ? it.gravity : 1);
 
     let moveX = 0, jump = false, fire = false;
     if (it.control === 'player') {
@@ -524,14 +706,26 @@ function MiniRuntime() {
     const wasOnGround = it._onGround;
     if (gravMult > 0) it._vy += BASE_GRAVITY * gravMult * dt * 60;
     else { it._vy *= 0.85; if (Math.abs(it._vy) < 0.02) it._vy = 0; }
+    if (!isFinite(it._vx)) it._vx = 0;
+    if (!isFinite(it._vy)) it._vy = 0;
     it._vy = clamp(it._vy, -30, 25);
-    it.x += it._vx * dt * 60;
-    resolveCollisions(state, it, 'x');
-    it._onGround = false;
-    it.y += it._vy * dt * 60;
-    resolveCollisions(state, it, 'y');
+    depenetrate(state, it);   // hướng nhìn vừa đổi / frame khối đổi → thoát khỏi khối trước khi di chuyển
+    // chia nhỏ bước di chuyển để không xuyên khối mỏng
+    const steps = clamp(Math.ceil(Math.max(Math.abs(it._vx), Math.abs(it._vy)) * dt * 60 / 6), 1, 12);
+    let grounded = false;
+    for (let s = 0; s < steps; s++) {
+      it.x += it._vx * dt * 60 / steps;
+      resolveCollisions(state, it, 'x');
+      it._onGround = false;
+      it.y += it._vy * dt * 60 / steps;
+      resolveCollisions(state, it, 'y');
+      if (it._onGround) grounded = true;
+    }
+    it._onGround = grounded;
+    depenetrate(state, it);
+    if (it._onGround === false && grounded) it._onGround = true;
     it.x = clamp(it.x, -5000, 5000);
-    if (it.y > VH + 500) { it.y = -60; it._vy = 0; }
+    if (!isFinite(it.x) || !isFinite(it.y) || (it.y > VH + 500 && it.y > killY(state))) respawnItem(it);
     if (!wasOnGround && it._onGround) fireEvent(state, it, 'onLand');
 
     // Determine state
@@ -553,28 +747,13 @@ function MiniRuntime() {
     if (st === 'idle') it._idleTime = (it._idleTime || 0) + dt;
     else it._idleTime = 0;
 
-    // onNearPlayer — fired when player enters range (edge)
-    if (it.events && it.events.length) {
-      let near = false;
-      for (let j = 0; j < state.items.length && !near; j++) {
-        const o = state.items[j];
-        if (o === it || o.kind !== 'sprite') continue;
-        if (o.control !== 'player' || o._dead) continue;
-        const dist = 200;  // edge threshold for near detection (fire once)
-        const dx = o.x - it.x, dy = o.y - it.y;
-        if (Math.sqrt(dx*dx + dy*dy) <= dist) near = true;
-      }
-      if (near && !it._nearPlayer) fireEvent(state, it, 'onNearPlayer');
-      it._nearPlayer = near;
-    }
-
     // onHitBlock / onHitSprite — edge detection
     if (it.events && it.events.length) {
       const currentTouching = new Set();
       const myBoxes = getHitboxes(it);
       for (let j = 0; j < state.items.length; j++) {
         const o = state.items[j];
-        if (o === it) continue;
+        if (o === it || o._dead) continue;
         const oBoxes = getHitboxes(o);
         if (!anyHitboxOverlap(myBoxes, oBoxes)) continue;
         currentTouching.add(o.id);
@@ -620,7 +799,7 @@ function MiniRuntime() {
       let hit = false;
       for (let j = 0; j < state.items.length; j++) {
         const other = state.items[j];
-        if (other.kind === 'block') {
+        if (other.kind === 'block' && !other._dead) {
           const boxes = getHitboxes(other);
           for (let k = 0; k < boxes.length; k++) if (aabb(pb, boxes[k])) { hit = true; break; }
         } else if (other.kind === 'sprite' && other.id !== p.owner && !other._dead) {
@@ -669,8 +848,8 @@ function MiniRuntime() {
     const dw = it.w * sc, dh = it.h * sc;
     if (img) {
       ctx.translate(it.x, it.y);
-      ctx.scale(it._facing, 1);
-      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.scale(it._facing < 0 ? -1 : 1, 1);
+      safeDraw(ctx, img, -dw / 2, -dh / 2, dw, dh);
     } else {
       ctx.fillStyle = it._dead ? '#5c2130' : (it.control === 'bot' ? '#ff5a6e' : '#7c5cff');
       ctx.fillRect(it.x - dw / 2, it.y - dh / 2, dw, dh);
@@ -709,7 +888,7 @@ function MiniRuntime() {
       const idx = (it._animFrame || 0) % anim.frames.length;
       const f = anim.frames[idx];
       if (f && f.img) {
-        ctx.drawImage(f.img, it.x - it.w/2, it.y - it.h/2, it.w, it.h);
+        safeDraw(ctx, f.img, it.x - it.w/2, it.y - it.h/2, it.w, it.h);
         if (editor) drawBlockEditorOverlay(ctx, it);
         return;
       }
@@ -719,7 +898,7 @@ function MiniRuntime() {
       ctx.save();
       ctx.beginPath(); ctx.rect(it.x - it.w/2, it.y - it.h/2, it.w, it.h); ctx.clip();
       if (it.tex.all && it.tex.all.img) {
-        ctx.drawImage(it.tex.all.img, it.x - it.w/2, it.y - it.h/2, it.w, it.h);
+        safeDraw(ctx, it.tex.all.img, it.x - it.w/2, it.y - it.h/2, it.w, it.h);
       } else {
         const x0 = it.x - it.w/2, y0 = it.y - it.h/2;
         const parts = [
@@ -730,7 +909,7 @@ function MiniRuntime() {
         ];
         for (const [k, x, y, w, h] of parts) {
           const t = it.tex[k];
-          if (t && t.img) ctx.drawImage(t.img, x, y, w, h);
+          if (t && t.img) safeDraw(ctx, t.img, x, y, w, h);
           else { ctx.fillStyle = 'rgba(40,46,60,.85)'; ctx.fillRect(x, y, w, h); }
         }
       }
@@ -766,7 +945,7 @@ function MiniRuntime() {
       ctx.translate(p.x, p.y);
       if (p.facing < 0) ctx.scale(-1, 1);
       if (p.ang) ctx.rotate(p.ang);
-      ctx.drawImage(img, -p.w / 2, -p.h / 2, p.w, p.h);
+      safeDraw(ctx, img, -p.w / 2, -p.h / 2, p.w, p.h);
     } else {
       ctx.fillStyle = '#ffb86b';
       ctx.shadowColor = '#ffb86b'; ctx.shadowBlur = 8;
@@ -931,7 +1110,7 @@ function MiniRuntime() {
     ctx.translate(VW/2 - cam.x, VH/2 - cam.y);
     if (editor) drawGrid(ctx, cam.x, cam.y);
 
-    for (const it of state.items) if (it.kind === 'block') drawBlock(ctx, it, editor);
+    for (const it of state.items) if (it.kind === 'block' && !it._dead) drawBlock(ctx, it, editor);
     for (const it of state.items) {
       if (it.kind === 'sprite') {
         drawSprite(ctx, it);
@@ -968,7 +1147,7 @@ function MiniRuntime() {
           ctx.fillStyle = 'rgba(255,200,80,.9)';
           ctx.font = 'bold 12px system-ui, sans-serif';
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          ctx.fillText('📷', sel.x, sel.y - sel.h/2 - 24);
+          ctx.fillText('CAM', sel.x, sel.y - sel.h/2 - 24);
         }
         if (sel.kind === 'sprite' && sel.control === 'bot') {
           const r = sel.botRange != null ? sel.botRange : 150;
@@ -987,7 +1166,7 @@ function MiniRuntime() {
           ctx.fillStyle = 'rgba(255,184,107,.9)';
           ctx.font = 'bold 11px system-ui, sans-serif';
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          ctx.fillText('🧩' + sel.events.length, sel.x, sel.y - sel.h/2 - 40);
+          ctx.fillText('EV ' + sel.events.length, sel.x, sel.y - sel.h/2 - 40);
         }
         ctx.restore();
       }
@@ -1006,7 +1185,7 @@ function MiniRuntime() {
     updateProjectiles, updateCamera,
     updateParticles, updateFloatingTexts, updateShake,
     render, drawUI, hitUIButton, spawnBullet, tryShoot,
-    fireEvent, executeAction
+    fireEvent, executeAction, frameOf, initVars, bodyBoxes, respawnItem
   };
 }
 
@@ -1182,7 +1361,8 @@ const State = {
   tab: 'scene',
   ui: RT.defaultUI(),
   uiSelected: null, uiDrag: null,
-  showMenu: false, fullscreen: false, dirty: false
+  showMenu: false, fullscreen: false, dirty: false,
+  varDefs: [], vars: {}
 };
 
 function toast(msg, kind, ms) {
@@ -1379,7 +1559,7 @@ function openHitboxModal(item) {
     hitboxState.boxes = [{ x: 0, y: 0, w: item.w, h: item.h }];
   }
 
-  document.getElementById('hitboxTitle').textContent = '🎯 Hitbox: ' + (item.name || '');
+  document.getElementById('hitboxTitle').textContent = 'Hitbox: ' + (item.name || '');
   document.getElementById('hitboxModal').classList.add('show');
   document.getElementById('hitboxAllFrames').checked = true;
 
@@ -1785,7 +1965,7 @@ function openAnimModal(item, key, label) {
   animCtx = { itemId: item.id, key };
   const anim = item.animations[key];
   if (!anim) return;
-  document.getElementById('animTitle').textContent = '🎞️ Animation: ' + label;
+  document.getElementById('animTitle').textContent = 'Animation: ' + label;
   document.getElementById('animFps').value = anim.fps || 8;
   document.getElementById('animLoop').checked = anim.loop !== false;
   renderAnimFrames();
@@ -1859,8 +2039,8 @@ function renderLayers() {
       thumb.appendChild(img);
     } else {
       thumb.textContent = item.kind === 'sprite'
-        ? (item.control === 'bot' ? '🤖' : '🧍')
-        : (item.hazard ? '⚠️' : '⬛');
+        ? (item.control === 'bot' ? 'BOT' : 'NV')
+        : (item.hazard ? '!' : 'KH');
     }
     card.appendChild(thumb);
     const nm = document.createElement('div');
@@ -1868,15 +2048,15 @@ function renderLayers() {
     nm.textContent = item.name;
     card.appendChild(nm);
     if (item.kind === 'sprite' && item.camera) {
-      const cam = document.createElement('div'); cam.className = 'cam'; cam.textContent = '📷';
+      const cam = document.createElement('div'); cam.className = 'cam'; cam.textContent = 'C';
       card.appendChild(cam);
     }
     if (item.kind === 'sprite' && item.control === 'bot') {
-      const b = document.createElement('div'); b.className = 'bot'; b.textContent = '🤖';
+      const b = document.createElement('div'); b.className = 'bot'; b.textContent = 'B';
       card.appendChild(b);
     }
     if (item.kind === 'sprite' && item.events && item.events.length) {
-      const ev = document.createElement('div'); ev.className = 'ev'; ev.textContent = '🧩';
+      const ev = document.createElement('div'); ev.className = 'ev'; ev.textContent = 'E';
       card.appendChild(ev);
     }
     const del = document.createElement('div');
@@ -2001,7 +2181,7 @@ function hitboxButton(item) {
   info.style.cssText = 'font-size:11px;color:#8fa3c0;margin-bottom:6px;';
   info.textContent = n ? (n + ' vùng hitbox đã vẽ') : 'Mặc định (toàn bộ item)';
   wrap.appendChild(info);
-  const btn = el('button', 'btn accent', '🎯 Mở trình chỉnh Hitbox');
+  const btn = el('button', 'btn accent', 'Mở trình chỉnh Hitbox');
   btn.style.width = '100%';
   btn.onclick = () => openHitboxModal(item);
   wrap.appendChild(btn);
@@ -2022,50 +2202,59 @@ function hitboxButton(item) {
 /* ============================================================
    EVENTS UI (Biến)
    ============================================================ */
+const CMP_OPS = [['==', '='], ['!=', '≠'], ['>', '>'], ['<', '<'], ['>=', '≥'], ['<=', '≤']];
 const TRIGGERS = [
-  ['onStart',       '🚀 Bắt đầu game'],
-  ['onShoot',       '💥 Bắn đạn'],
-  ['onJump',        '⬆️ Nhảy'],
-  ['onLand',        '⬇️ Chạm đất'],
-  ['onRun',         '🏃 Bắt đầu chạy'],
-  ['onHurt',        '💔 Mất máu'],
-  ['onDeath',       '☠️ Chết'],
-  ['onHpBelow',     '❤️ Máu dưới X%'],
+  ['onStart',       'Bắt đầu game'],
+  ['onShoot',       'Bắn đạn'],
+  ['onJump',        'Nhảy'],
+  ['onLand',        'Chạm đất'],
+  ['onRun',         'Bắt đầu chạy'],
+  ['onHurt',        'Mất máu'],
+  ['onDeath',       'Chết'],
+  ['onHpBelow',     'Máu dưới X%'],
   ['onKeyPress',    '⌨️ Bấm phím'],
-  ['onNearPlayer',  '👁 Player lại gần'],
-  ['onEvery',       '⏱ Định kỳ mỗi N giây'],
-  ['onIdle',        '😴 Đứng yên N giây'],
-  ['onHitBlock',    '🧱 Chạm khối'],
-  ['onHitSprite',   '👥 Chạm nhân vật khác']
+  ['onNearPlayer',  'Player lại gần'],
+  ['onEvery',       'Định kỳ mỗi N giây'],
+  ['onIdle',        'Đứng yên N giây'],
+  ['onHitBlock',    'Chạm khối'],
+  ['onHitSprite',   'Chạm nhân vật khác'],
+  ['onVar',         'Biến thỏa điều kiện']
 ];
 const ACTIONS = [
-  ['shakeScreen',   '📳 Rung màn hình'],
-  ['changeHp',      '❤️ Đổi máu'],
-  ['spawnBullet',   '💥 Bắn đạn'],
-  ['teleport',      '➡️ Dịch chuyển (dx, dy)'],
-  ['setPos',        '📍 Đặt vị trí (x, y)'],
-  ['setInvuln',     '🛡 Bất tử N giây'],
-  ['destroySelf',   '☠️ Tự huỷ'],
-  ['changeControl', '🎮 Đổi kiểu điều khiển'],
-  ['showText',      '💬 Hiện text bay lên'],
-  ['spawnParticles','✨ Tạo hạt'],
-  ['flash',         '⚡ Nhấp nháy màu'],
-  ['playSound',     '🔊 Phát âm thanh (beep)'],
-  ['setSpeed',      '⚡ Buff tốc độ (N giây)'],
-  ['setGravity',    '🌌 Buff trọng lực (N giây)'],
-  ['setScale',      '📏 Buff kích thước (N giây)'],
-  ['setCameraTarget','📷 Đổi mục tiêu camera']
+  ['shakeScreen',   'Rung màn hình'],
+  ['changeHp',      'Đổi máu'],
+  ['spawnBullet',   'Bắn đạn'],
+  ['teleport',      'Dịch chuyển (dx, dy)'],
+  ['setPos',        'Đặt vị trí (x, y)'],
+  ['setInvuln',     'Bất tử N giây'],
+  ['destroySelf',   'Tự huỷ'],
+  ['changeControl', 'Đổi kiểu điều khiển'],
+  ['showText',      'Hiện text bay lên'],
+  ['spawnParticles','Tạo hạt'],
+  ['flash',         'Nhấp nháy màu'],
+  ['playSound',     'Phát âm thanh (beep)'],
+  ['setSpeed',      'Buff tốc độ (N giây)'],
+  ['setGravity',    'Buff trọng lực (N giây)'],
+  ['setScale',      'Buff kích thước (N giây)'],
+  ['setCameraTarget','Đổi mục tiêu camera'],
+  ['setVar',        'Đặt / đổi biến'],
+  ['setHp',         'Đặt máu'],
+  ['respawn',       'Về vị trí xuất phát']
 ];
 const TRIGGER_PARAM_DEF = {
   onHpBelow: { percent: 50 },
-  onKeyPress: { key: 'Fire' },
+  onKeyPress: { key: 'Fire', mode: 'press' },
+  onVar: { name: 'score', op: '>=', value: '10' },
   onNearPlayer: { distance: 100 },
   onEvery: { interval: 2 },
   onIdle: { seconds: 2 }
 };
 const ACTION_PARAM_DEF = {
   shakeScreen:    { intensity: 10, duration: 0.5 },
-  changeHp:       { amount: -10 },
+  changeHp:       { amount: -10, mode: 'amount' },
+  spawnBullet:    { count: 1, spread: 0 },
+  setVar:         { name: 'score', mode: 'add', value: '1' },
+  setHp:          { amount: 100 },
   teleport:       { dx: 0, dy: -40 },
   setPos:         { x: 320, y: 100 },
   setInvuln:      { seconds: 2 },
@@ -2078,6 +2267,24 @@ const ACTION_PARAM_DEF = {
   setGravity:     { multiplier: 0, duration: 3 },
   setScale:       { multiplier: 1.5, duration: 3 }
 };
+
+function renderVarsPanel(root) {
+  root.appendChild(sectionHeader('Biến toàn cục'));
+  State.varDefs.forEach((d, i) => {
+    const line = el('div'); line.style.cssText = 'display:flex;gap:4px;margin-bottom:4px;';
+    line.appendChild(textInput(d.name, v => { d.name = v.replace(/[^A-Za-z0-9_]/g, ''); }));
+    line.appendChild(textInput(String(d.value), v => { d.value = v; }));
+    const x = el('button', 'btn-mini danger', '✕');
+    x.onclick = () => { State.varDefs.splice(i, 1); renderInspector(); scheduleSave(); };
+    line.appendChild(x);
+    root.appendChild(line);
+  });
+  const add = el('button', 'btn', '＋ Thêm biến toàn cục');
+  add.style.width = '100%';
+  add.onclick = () => { State.varDefs.push({ name: 'var' + (State.varDefs.length + 1), value: '0' }); renderInspector(); scheduleSave(); };
+  root.appendChild(add);
+  root.appendChild(el('div', 'ev-hint', 'Tên + giá trị ban đầu. Dùng trong Điều kiện, hành động Đặt biến, trigger Biến, và text bay {tênBiến}.'));
+}
 
 function renderEventCard(item, ev, idx) {
   const card = el('div', 'event-card');
@@ -2094,7 +2301,7 @@ function renderEventCard(item, ev, idx) {
   });
   head.appendChild(trigSel);
 
-  const del = el('button', 'ev-del', '🗑');
+  const del = el('button', 'ev-del', '✕');
   del.onclick = () => {
     item.events.splice(idx, 1);
     renderInspector(); renderLayers(); scheduleSave();
@@ -2111,6 +2318,8 @@ function renderEventCard(item, ev, idx) {
     card.appendChild(row('Phím', textInput(tp.key || 'Fire', v => tp.key = v)));
     card.appendChild(el('div', 'ev-hint',
       'Dùng tên phím: Fire, ArrowLeft, ArrowRight, ArrowUp, a, b, ...'));
+    card.appendChild(row('Kiểu', selectInput(tp.mode || 'press', [['press', 'Vừa nhấn'], ['hold', 'Đang giữ (lặp)'], ['release', 'Vừa nhả']], v => { tp.mode = v; renderInspector(); })));
+    if (tp.mode === 'hold') card.appendChild(row('Lặp mỗi (s)', numInput(tp.repeat != null ? tp.repeat : 0.2, v => tp.repeat = Math.max(0.05, v), 0.05, 0.05)));
   } else if (ev.trigger === 'onNearPlayer') {
     card.appendChild(row('Khoảng cách', numInput(tp.distance != null ? tp.distance : 100,
       v => tp.distance = Math.max(10, v), 10, 10)));
@@ -2120,15 +2329,30 @@ function renderEventCard(item, ev, idx) {
   } else if (ev.trigger === 'onIdle') {
     card.appendChild(row('Sau (giây)', numInput(tp.seconds != null ? tp.seconds : 2,
       v => tp.seconds = Math.max(0.1, v), 0.1, 0.1)));
+  } else if (ev.trigger === 'onVar') {
+    card.appendChild(row('Biến', textInput(tp.name || '', v => tp.name = v.trim())));
+    card.appendChild(row('So sánh', selectInput(tp.op || '>=', CMP_OPS, v => tp.op = v)));
+    card.appendChild(row('Giá trị', textInput(tp.value != null ? String(tp.value) : '0', v => tp.value = v)));
+    card.appendChild(el('div', 'ev-hint', 'Chạy 1 lần mỗi khi điều kiện chuyển từ sai sang đúng.'));
   }
 
   // Delay
-  card.appendChild(el('div', 'ev-sub', '⏳ Trễ'));
+  card.appendChild(el('div', 'ev-sub', 'Trễ'));
   card.appendChild(row('Sau (giây)', numInput(ev.delay != null ? ev.delay : 0,
     v => ev.delay = Math.max(0, v), 0.1, 0)));
 
+  card.appendChild(el('div', 'ev-sub', 'Điều kiện & giới hạn'));
+  const cd = ev.cond || (ev.cond = { var: '', op: '>=', value: '0' });
+  card.appendChild(row('Chỉ khi biến', textInput(cd.var || '', v => cd.var = v.trim())));
+  card.appendChild(row('So sánh', selectInput(cd.op || '>=', CMP_OPS, v => cd.op = v)));
+  card.appendChild(row('Giá trị', textInput(cd.value != null ? String(cd.value) : '0', v => cd.value = v)));
+  card.appendChild(el('div', 'ev-hint', 'Để trống tên biến = luôn chạy. Có sẵn: hp, hpPercent, maxHp, x, y, time. Giá trị có thể là $tênBiến.'));
+  card.appendChild(row('Chỉ 1 lần', checkbox(!!ev.once, v => ev.once = v)));
+  card.appendChild(row('Hồi chiêu (s)', numInput(ev.cooldown || 0, v => ev.cooldown = Math.max(0, v), 0.1, 0)));
+  card.appendChild(row('Xác suất (%)', numInput(ev.chance != null ? ev.chance : 100, v => ev.chance = clamp(v, 0, 100), 5, 0, 100)));
+
   // Action
-  card.appendChild(el('div', 'ev-sub', '🎬 Hành động'));
+  card.appendChild(el('div', 'ev-sub', 'Hành động'));
   const actSel = selectInput(ev.action, ACTIONS, v => {
     ev.action = v;
     const def = ACTION_PARAM_DEF[v];
@@ -2147,6 +2371,7 @@ function renderEventCard(item, ev, idx) {
       r('Thời gian (s)', numInput(ap.duration != null ? ap.duration : 0.5, v => ap.duration = Math.max(0.05, v), 0.05, 0.05));
       break;
     case 'changeHp':
+      r('Kiểu', selectInput(ap.mode || 'amount', [['amount', 'Số máu'], ['percent', '% máu tối đa']], v => ap.mode = v));
       r('Số lượng', numInput(ap.amount != null ? ap.amount : -10, v => ap.amount = v, 1));
       card.appendChild(el('div', 'ev-hint', 'Số âm = mất máu, số dương = hồi máu.'));
       break;
@@ -2205,11 +2430,39 @@ function renderEventCard(item, ev, idx) {
       card.appendChild(el('div', 'ev-hint', 'Đặt nhân vật này làm mục tiêu camera.'));
       break;
     case 'spawnBullet':
+      r('Số viên', numInput(ap.count != null ? ap.count : 1, v => ap.count = clamp(Math.round(v), 1, 12), 1, 1, 12));
+      r('Góc toả (độ)', numInput(ap.spread != null ? ap.spread : 0, v => ap.spread = clamp(v, 0, 180), 5, 0, 180));
+      break;
+    case 'setVar':
+      r('Tên biến', textInput(ap.name || '', v => ap.name = v.replace(/[^A-Za-z0-9_]/g, '')));
+      r('Kiểu', selectInput(ap.mode || 'add', [['set', 'Gán ='], ['add', 'Cộng +'], ['sub', 'Trừ -'], ['mul', 'Nhân ×'], ['toggle', 'Bật/tắt (0/1)'], ['rand', 'Ngẫu nhiên 0..giá trị']], v => ap.mode = v));
+      r('Giá trị', textInput(ap.value != null ? String(ap.value) : '1', v => ap.value = v));
+      card.appendChild(el('div', 'ev-hint', 'Giá trị có thể là số, chữ, hoặc $tênBiến khác.'));
+      break;
+    case 'setHp':
+      r('Máu', numInput(ap.amount != null ? ap.amount : 100, v => ap.amount = Math.max(0, v), 5, 0));
+      break;
+    case 'respawn':
+      card.appendChild(el('div', 'ev-hint', 'Đưa về vị trí lúc bấm Chạy.'));
+      break;
     case 'destroySelf':
       card.appendChild(el('div', 'ev-hint', 'Không có tham số.'));
       break;
     default:
       break;
+  }
+
+  const defs = ACTION_PARAM_DEF[ev.action] || {};
+  const nums = Object.keys(defs).filter(k => typeof defs[k] === 'number');
+  if (nums.length) {
+    card.appendChild(el('div', 'ev-sub', 'Gắn tham số với biến'));
+    nums.forEach(k => {
+      card.appendChild(row(k, textInput(typeof ap[k] === 'string' ? ap[k].replace(/^\$/, '') : '', v => {
+        v = v.trim();
+        ap[k] = v ? '$' + v.replace(/^\$/, '') : defs[k];
+      })));
+    });
+    card.appendChild(el('div', 'ev-hint', 'Gõ tên biến để tham số lấy giá trị biến lúc chạy. Để trống = dùng số đã nhập.'));
   }
 
   return card;
@@ -2223,8 +2476,8 @@ function renderInspector() {
   root.innerHTML = '';
 
   const tabs = el('div', 'tabs');
-  const tScene = el('div', 'tab' + (State.tab === 'scene' ? ' on' : ''), '🎬 Scene');
-  const tUI    = el('div', 'tab' + (State.tab === 'ui'    ? ' on' : ''), '🎨 UI');
+  const tScene = el('div', 'tab' + (State.tab === 'scene' ? ' on' : ''), 'Scene');
+  const tUI    = el('div', 'tab' + (State.tab === 'ui'    ? ' on' : ''), 'UI');
   tScene.onclick = () => { State.tab = 'scene'; State.uiSelected = null;
     document.getElementById('btnUI').classList.remove('on'); renderInspector(); };
   tUI.onclick    = () => { State.tab = 'ui';    State.selectedId = null;
@@ -2237,7 +2490,7 @@ function renderInspector() {
   const item = State.items.find(i => i.id === State.selectedId);
   if (!item) {
     root.appendChild(el('div', 'empty',
-      'Chọn một layer để chỉnh sửa<br>hoặc bấm ＋ để thêm nhân vật / khối<br><br>Bấm tab 🎨 UI để chỉnh giao diện.'));
+      'Chọn một layer để chỉnh sửa<br>hoặc bấm ＋ để thêm nhân vật / khối<br><br>Bấm tab UI để chỉnh giao diện.'));
     return;
   }
   if (item.kind === 'sprite') renderSpriteInspector(root, item);
@@ -2246,7 +2499,7 @@ function renderInspector() {
 
 function renderSpriteInspector(root, item) {
   const isBot = item.control === 'bot';
-  root.appendChild(el('div', 'ins-head', isBot ? '🤖 Bot / NPC' : '🧍 Nhân vật'));
+  root.appendChild(el('div', 'ins-head', isBot ? 'Bot / NPC' : 'Nhân vật'));
 
   root.appendChild(row('Tên', textInput(item.name, v => { item.name = v; renderLayers(); })));
   root.appendChild(row('X', numInput(Math.round(item.x), v => item.x = v, 1)));
@@ -2269,14 +2522,14 @@ function renderSpriteInspector(root, item) {
     if (v === 'bot' && item.shoot && !item.shoot.enabled) item.shoot.enabled = true;
     renderInspector(); renderLayers();
   })));
-  root.appendChild(row('📷 Camera theo', checkbox(item.camera, v => {
+  root.appendChild(row('Camera theo', checkbox(item.camera, v => {
     item.camera = v;
     if (v) for (const o of State.items) if (o !== item && o.kind === 'sprite') o.camera = false;
     renderLayers();
   })));
 
   if (isBot) {
-    root.appendChild(sectionHeader('🤖 Bot AI'));
+    root.appendChild(sectionHeader('Bot AI'));
     root.appendChild(row('Tầm phát hiện', numInput(item.botRange, v => item.botRange = Math.max(20, v), 10, 20)));
     root.appendChild(row('Phạm vi tuần',  numInput(item.botPatrol, v => item.botPatrol = Math.max(10, v), 10, 10)));
   }
@@ -2291,7 +2544,7 @@ function renderSpriteInspector(root, item) {
   ag.appendChild(animSlot(item, 'shoot', 'Bắn đạn'));
   root.appendChild(ag);
 
-  root.appendChild(sectionHeader('💥 Bắn đạn'));
+  root.appendChild(sectionHeader('Bắn đạn'));
   root.appendChild(row('Bật bắn đạn', checkbox(item.shoot.enabled, v => {
     item.shoot.enabled = v; renderInspector();
   })));
@@ -2341,7 +2594,8 @@ function renderSpriteInspector(root, item) {
   root.appendChild(row('Bất tử (s)', numInput(item.iframe, v => item.iframe = Math.max(0, v), 0.1, 0)));
 
   /* ============ BIẾN (EVENTS) ============ */
-  root.appendChild(sectionHeader('🧩 Biến (Sự kiện → Hành động)'));
+  renderVarsPanel(root);
+  root.appendChild(sectionHeader('Biến (Sự kiện → Hành động)'));
   if (!item.events) item.events = [];
   const evList = el('div');
   item.events.forEach((ev, i) => evList.appendChild(renderEventCard(item, ev, i)));
@@ -2370,13 +2624,13 @@ function renderSpriteInspector(root, item) {
     root.appendChild(hint);
   }
 
-  const del = el('button', 'btn danger full', '🗑 Xoá ' + (isBot ? 'bot' : 'nhân vật'));
+  const del = el('button', 'btn danger full', 'Xoá ' + (isBot ? 'bot' : 'nhân vật'));
   del.onclick = () => deleteItem(item.id);
   root.appendChild(del);
 }
 
 function renderBlockInspector(root, item) {
-  root.appendChild(el('div', 'ins-head', '⬛ Khối'));
+  root.appendChild(el('div', 'ins-head', 'Khối'));
   root.appendChild(row('Tên', textInput(item.name, v => { item.name = v; renderLayers(); })));
   root.appendChild(row('X', numInput(Math.round(item.x), v => item.x = v, 1)));
   root.appendChild(row('Y', numInput(Math.round(item.y), v => item.y = v, 1)));
@@ -2393,7 +2647,7 @@ function renderBlockInspector(root, item) {
   root.appendChild(row('Rắn (đất/tường)', checkbox(item.solid,  v => item.solid  = v)));
   root.appendChild(row('Gây sát thương',  checkbox(item.hazard, v => item.hazard = v)));
 
-  root.appendChild(sectionHeader('🎞️ Animation (bầu trời, mây…)'));
+  root.appendChild(sectionHeader('Animation (bầu trời, mây…)'));
   if (!item.animations) item.animations = { default: emptyAnim() };
   if (!item.animations.default) item.animations.default = emptyAnim();
   const ag = el('div', 'anim-grid');
@@ -2405,7 +2659,7 @@ function renderBlockInspector(root, item) {
   ['all', 'top', 'bottom', 'left', 'right'].forEach(k => grid.appendChild(texSlot(item, k)));
   root.appendChild(grid);
 
-  const del = el('button', 'btn danger full', '🗑 Xoá khối');
+  const del = el('button', 'btn danger full', 'Xoá khối');
   del.onclick = () => deleteItem(item.id);
   root.appendChild(del);
 }
@@ -2415,14 +2669,14 @@ function renderBlockInspector(root, item) {
    ============================================================ */
 function renderUIInspector(root) {
   const ui = State.ui;
-  root.appendChild(el('div', 'ins-head', '🎨 Giao diện'));
+  root.appendChild(el('div', 'ins-head', 'Giao diện'));
   root.appendChild(sectionHeader('Điều khiển'));
   root.appendChild(row('Kiểu', selectInput(ui.mode, [
     ['arrows', 'Nút mũi tên'], ['joystick', 'Joystick']
   ], v => { ui.mode = v; renderInspector(); })));
 
   if (ui.mode === 'arrows') {
-    for (const [key, label] of [['left','Nút ◀'],['right','Nút ▶'],['jump','Nút ▲'],['fire','Nút 🔥']]) {
+    for (const [key, label] of [['left','Nút ◀'],['right','Nút ▶'],['jump','Nút ▲'],['fire','Nút Bắn']]) {
       root.appendChild(sectionHeader(label));
       const g = el('div', 'grid4');
       g.appendChild(row('X', numInput(ui.layout[key].x, v => ui.layout[key].x = v, 2)));
@@ -2467,7 +2721,7 @@ function renderUIInspector(root) {
     g.appendChild(row('W', numInput(b.w, v => b.w = Math.max(20, v), 2, 20)));
     g.appendChild(row('H', numInput(b.h, v => b.h = Math.max(16, v), 2, 16)));
     item.appendChild(g);
-    const del = el('button', 'btn-mini danger', '🗑 Xoá');
+    const del = el('button', 'btn-mini danger', 'Xoá');
     del.style.width = '100%'; del.style.padding = '6px';
     del.onclick = () => { ui.buttons.splice(i, 1); renderInspector(); scheduleSave(); };
     item.appendChild(del);
@@ -2558,11 +2812,14 @@ function play() {
       it._prevHp = null;
       it._idleTime = 0;
       it._nearPlayer = false;
+      it._varState = {}; it._evMeta = {}; it._nearEv = {};
+      it._spawnX = it.x; it._spawnY = it.y;
     } else if (it.kind === 'block') {
-      it._animFrame = 0; it._animTime = 0;
+      it._animFrame = 0; it._animTime = 0; it._dead = false;
     }
   }
   State.keys = {};
+  State.vars = RT.initVars(State.varDefs);
   State.pointerToBtn.clear();
   State.joystick.active = false; State.joystick.pointerId = null;
   State.projectiles = [];
@@ -2581,7 +2838,11 @@ function play() {
 }
 function stop() {
   State.playing = false;
-  for (const it of State.items) if (it.kind === 'sprite') it._facing = 1;
+  for (const it of State.items) {          // trả nhân vật/khối về trạng thái lúc thiết kế
+    if (it.kind === 'sprite') { it._facing = 1; it._state = 'idle'; it._animFrame = 0; it.hp = it.maxHp; it._vx = 0; it._vy = 0; }
+    if (it._spawnX != null) { it.x = it._spawnX; it.y = it._spawnY; it._spawnX = null; }
+    it._dead = false;
+  }
   State.showMenu = false;
   State.keys = {};
   State.pointerToBtn.clear();
@@ -2757,6 +3018,11 @@ function updateCamInfo() {
    ============================================================ */
 let lastT = 0;
 function loop(t) {
+  try { loopBody(t); }
+  catch (e) { if (!loop._err) { loop._err = 1; console.error(e); toast('Lỗi runtime: ' + ((e && e.message) || e), 'err', 4000); } }
+  requestAnimationFrame(loop);
+}
+function loopBody(t) {
   if (!lastT) lastT = t;
   let dt = (t - lastT) / 1000;
   lastT = t;
@@ -2793,7 +3059,6 @@ function loop(t) {
 
   RT.render(ctx, State, { editor: !State.playing });
   if (!State.playing && State.tab === 'ui') drawUIEditorOverlay();
-  requestAnimationFrame(loop);
 }
 
 function drawUIEditorOverlay() {
@@ -2880,11 +3145,15 @@ function serializeEvents(events) {
     triggerParams: JSON.parse(JSON.stringify(ev.triggerParams || {})),
     delay: ev.delay != null ? ev.delay : 0,
     action: ev.action,
-    actionParams: JSON.parse(JSON.stringify(ev.actionParams || {}))
+    actionParams: JSON.parse(JSON.stringify(ev.actionParams || {})),
+    cond: ev.cond && ev.cond.var ? { var: ev.cond.var, op: ev.cond.op || '>=', value: ev.cond.value } : undefined,
+    once: !!ev.once, cooldown: ev.cooldown || 0, chance: ev.chance != null ? ev.chance : 100
   }));
 }
 function serialize() {
   return {
+    varDefs: State.varDefs.map(d => ({ name: d.name, value: d.value })),
+
     vw: VW, vh: VH,
     ui: JSON.parse(JSON.stringify(State.ui)),
     items: State.items.map(it => {
@@ -2934,6 +3203,7 @@ function serialize() {
 }
 
 function deserialize(data) {
+  State.varDefs = ((data && data.varDefs) || []).map(d => ({ name: String(d.name || ''), value: d.value != null ? String(d.value) : '0' }));
   State.items = [];
   State.selectedId = null;
   State.ui = (data && data.ui) ? JSON.parse(JSON.stringify(data.ui)) : RT.defaultUI();
@@ -2986,7 +3256,9 @@ function deserialize(data) {
         triggerParams: Object.assign({}, e.triggerParams || {}),
         delay: e.delay != null ? e.delay : 0,
         action: e.action || 'shakeScreen',
-        actionParams: Object.assign({}, e.actionParams || {})
+        actionParams: Object.assign({}, e.actionParams || {}),
+        cond: e.cond ? Object.assign({}, e.cond) : undefined,
+        once: !!e.once, cooldown: e.cooldown || 0, chance: e.chance != null ? e.chance : 100
       }));
 
       const sp = makeSprite({
@@ -3245,7 +3517,7 @@ const Exporter = (function () {
 
     L.push('var state = { items: [], playing: true, keys: {}, time: 0,');
     L.push('camera: {x:VW/2,y:VH/2}, projectiles: [],');
-    L.push('particles: [], floatingTexts: [],');
+    L.push('particles: [], floatingTexts: [], vars: RT.initVars(data.varDefs||[]),');
     L.push('shakeScreen: {intensity:0, timeLeft:0, duration:0.001},');
     L.push('ui: data.ui || RT.defaultUI(), showMenu: !!(data.ui && data.ui.mainMenu && data.ui.mainMenu.enabled) };');
 
@@ -3270,7 +3542,8 @@ const Exporter = (function () {
     L.push('    var hitboxes = (d.hitboxes||[]).map(function(h){return {ox:h.ox,oy:h.oy,w:h.w,h:h.h};});');
     L.push('    var events = (d.events||[]).map(function(e){return {');
     L.push('      id:e.id, trigger:e.trigger, triggerParams:e.triggerParams||{},');
-    L.push('      delay:e.delay||0, action:e.action, actionParams:e.actionParams||{}');
+    L.push('      delay:e.delay||0, action:e.action, actionParams:e.actionParams||{},');
+    L.push('      cond:e.cond, once:!!e.once, cooldown:e.cooldown||0, chance:e.chance!=null?e.chance:100');
     L.push('    };});');
     L.push('    state.items.push({');
     L.push('      kind:"sprite", id:d.id, name:d.name,');
@@ -3394,7 +3667,7 @@ const Exporter = (function () {
     L.push('window.addEventListener("keyup", function(e){ state.keys[e.key]=false; });');
 
     L.push('var lastT = 0;');
-    L.push('function loop(t){');
+    L.push('function loop(t){ try {');
     L.push('  if (!lastT) lastT = t;');
     L.push('  var dt = (t-lastT)/1000; lastT = t;');
     L.push('  if (dt > 0.05) dt = 0.05; if (dt < 0) dt = 0;');
@@ -3422,6 +3695,7 @@ const Exporter = (function () {
     L.push('    RT.updateShake(state, dt);');
     L.push('  }');
     L.push('  RT.render(ctx, state, { editor: false });');
+    L.push('  } catch(e){ if(!loop.err){ loop.err=1; console.error(e); } }');
     L.push('  requestAnimationFrame(loop);');
     L.push('}');
 
@@ -3506,14 +3780,14 @@ const Exporter = (function () {
     const info = document.getElementById('exportResInfo');
     const wrap = document.getElementById('resCodeWrap');
     const ta = document.getElementById('resCode');
-    if (dlOk) { title.textContent = '✅ Xuất thành công'; title.style.color = '#7cffb0'; }
-    else { title.textContent = '⚠️ Không thể tải ZIP'; title.style.color = '#ff8fa3'; }
+    if (dlOk) { title.textContent = 'Xuất thành công'; title.style.color = '#7cffb0'; }
+    else { title.textContent = 'Không thể tải ZIP'; title.style.color = '#ff8fa3'; }
     const sizeKB = (result.zipBytes.length / 1024).toFixed(1);
     info.innerHTML =
       '<div><b>Tên file:</b> ' + filename + '</div>' +
       '<div><b>Kích thước ZIP:</b> ' + sizeKB + ' KB</div>' +
       '<div><b>Cấu trúc:</b> index.html + assets/ (' + result.assetCount + ' file)</div>' +
-      '<div><b>Trạng thái:</b> ' + (dlOk ? '✅ Đã gửi lệnh tải' : '❌ Thất bại') + '</div>';
+      '<div><b>Trạng thái:</b> ' + (dlOk ? 'Đã gửi lệnh tải' : 'Thất bại') + '</div>';
     ta.value = result.previewHtml;
     if (!dlOk) wrap.classList.add('show'); else wrap.classList.remove('show');
     modal.classList.add('show');
@@ -3533,7 +3807,7 @@ const Exporter = (function () {
       const filename = 'mnhr-game-' + stamp + '.zip';
       const ok = downloadBlob(result.zipBytes, filename);
       showResult(result, filename, ok);
-      if (ok) toast('✅ Đã xuất: ' + filename, 'ok', 3000);
+      if (ok) toast('Đã xuất: ' + filename, 'ok', 3000);
     } catch (e) { console.error(e); alert('Lỗi: ' + e.message); }
   }
   function bind() {
@@ -3574,8 +3848,8 @@ const Exporter = (function () {
     };
     document.getElementById('btnResShowHtml').onclick = () => document.getElementById('resCodeWrap').classList.toggle('show');
     document.getElementById('btnResCopy').onclick = async () => {
-      try { await navigator.clipboard.writeText(_lastExport.previewHtml); toast('📋 Đã copy HTML', 'ok'); }
-      catch (e) { const ta = document.getElementById('resCode'); ta.select(); document.execCommand('copy'); toast('📋 Đã copy HTML', 'ok'); }
+      try { await navigator.clipboard.writeText(_lastExport.previewHtml); toast('Đã copy HTML', 'ok'); }
+      catch (e) { const ta = document.getElementById('resCode'); ta.select(); document.execCommand('copy'); toast('Đã copy HTML', 'ok'); }
       document.getElementById('resCodeWrap').classList.add('show');
     };
     document.getElementById('btnResSelectAll').onclick = () => {
@@ -3750,7 +4024,7 @@ async function init() {
   await loadProject(meta);
   updateCamInfo();
   requestAnimationFrame(loop);
-  toast('MNHR-engine v7 · lưu trữ: ' + Store.name(), 'ok', 2800);
+  toast('MNHR-engine Alpha 7.5 · lưu trữ: ' + Store.name(), 'ok', 2800);
 }
 
 return {
