@@ -1033,11 +1033,11 @@ function MiniRuntime() {
       ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.restore();
       drawCircleBtn(ctx, L.jump, '▲', state.keys[' '], '#7c5cff');
-      drawCircleBtn(ctx, L.fire, '🔥', state.keys['Fire'], '#ff7b5a');
+      drawCircleBtn(ctx, L.fire, 'F', state.keys['Fire'], '#ff7b5a');
     } else {
       drawCircleBtn(ctx, L.left,  '◀', state.keys['ArrowLeft'],  '#7c5cff');
       drawCircleBtn(ctx, L.right, '▶', state.keys['ArrowRight'], '#7c5cff');
-      drawCircleBtn(ctx, L.fire,  '🔥', state.keys['Fire'],       '#ff7b5a');
+      drawCircleBtn(ctx, L.fire,  'F', state.keys['Fire'],       '#ff7b5a');
       drawCircleBtn(ctx, L.jump,  '▲', state.keys[' '],           '#3ddc84');
     }
     if (ui.buttons && ui.buttons.length) {
@@ -2212,7 +2212,7 @@ const TRIGGERS = [
   ['onHurt',        'Mất máu'],
   ['onDeath',       'Chết'],
   ['onHpBelow',     'Máu dưới X%'],
-  ['onKeyPress',    '⌨️ Bấm phím'],
+  ['onKeyPress',    'Bấm phím'],
   ['onNearPlayer',  'Player lại gần'],
   ['onEvery',       'Định kỳ mỗi N giây'],
   ['onIdle',        'Đứng yên N giây'],
@@ -3090,12 +3090,12 @@ function drawUIEditorOverlay() {
   if (ui.mode === 'joystick') {
     ghost(L.joyBase, 'joyBase', 'JOY');
     ghost(L.jump, 'jump', '▲');
-    ghost(L.fire, 'fire', '🔥');
+    ghost(L.fire, 'fire', 'F');
   } else {
     ghost(L.left, 'left', '◀');
     ghost(L.right, 'right', '▶');
     ghost(L.jump, 'jump', '▲');
-    ghost(L.fire, 'fire', '🔥');
+    ghost(L.fire, 'fire', 'F');
   }
   if (ui.buttons) {
     for (const b of ui.buttons) {
@@ -3328,13 +3328,13 @@ function updateSaveBtn() {
   b.classList.toggle('dirty', !!State.dirty);
 }
 function scheduleSave() { State.dirty = true; updateSaveBtn(); }   // chỉ đánh dấu "chưa lưu"
-async function saveProject() {
+async function saveProject(silent) {
   if (!State.currentProjectId || saving) return false;
   saving = true; updateSaveBtn();
   try {
     const size = await Projects.save(State.currentProjectId, serialize());
     State.dirty = false;
-    toast('Đã lưu (' + fmtSize(size) + ' · ' + Store.name() + ')', 'ok');
+    if (!silent) toast('Đã lưu (' + fmtSize(size) + ' · ' + Store.name() + ')', 'ok');
     return true;
   } catch (e) {
     console.error(e);
@@ -3362,6 +3362,121 @@ async function loadProject(meta) {
 /* ============================================================
    PROJECTS UI
    ============================================================ */
+/* ============================================================
+   CÀI ĐẶT · THEME · FILE .mnhr
+   ============================================================ */
+const Settings = (function () {
+  const KEY = 'mnhr_settings';
+  const v = { theme: 'dark', autosave: false, warn: true };
+  try { Object.assign(v, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) {}
+  function apply() {
+    document.documentElement.setAttribute('data-theme', v.theme === 'light' ? 'light' : 'dark');
+    const m = document.querySelector('meta[name=theme-color]');
+    if (m) m.setAttribute('content', v.theme === 'light' ? '#e9edf4' : '#0b0d12');
+  }
+  function set(k, val) { v[k] = val; try { localStorage.setItem(KEY, JSON.stringify(v)); } catch (e) {} apply(); }
+  return { get: () => v, set, apply };
+})();
+
+function projectStats() {
+  let sprites = 0, blocks = 0, frames = 0, hb = 0, events = 0, bytes = 0;
+  for (const it of State.items) {
+    if (it.kind === 'sprite') sprites++; else blocks++;
+    events += (it.events || []).length;
+    hb += (it.hitboxes || []).length;
+    for (const k in (it.animations || {})) {
+      for (const f of (it.animations[k].frames || [])) { frames++; hb += (f.hitboxes || []).length; if (f.url) bytes += f.url.length; }
+    }
+  }
+  return { sprites, blocks, frames, hb, events, bytes };
+}
+async function renderSettings() {
+  const st = projectStats(), meta = Projects.meta(State.currentProjectId);
+  const lines = [
+    ['Dự án', meta ? meta.name : '-'], ['Nhân vật / Bot', st.sprites], ['Khối', st.blocks],
+    ['Frame ảnh', st.frames + ' (~' + fmtSize(st.bytes) + ')'], ['Hitbox', st.hb], ['Sự kiện', st.events],
+    ['Dung lượng dự án', meta ? fmtSize(meta.size || 0) : '-'], ['Nơi lưu', Store.name()], ['Phiên bản', 'Alpha 7.5']
+  ];
+  try {
+    if (navigator.storage && navigator.storage.estimate) {
+      const e = await navigator.storage.estimate();
+      lines.push(['Bộ nhớ trình duyệt', fmtSize(e.usage || 0) + ' / ' + fmtSize(e.quota || 0)]);
+    }
+  } catch (e) {}
+  const box = document.getElementById('setStats');
+  box.innerHTML = '';
+  for (const kv of lines) {
+    const r = document.createElement('div'); r.className = 'set-stat';
+    const a = document.createElement('span'); a.textContent = kv[0];
+    const b = document.createElement('b'); b.textContent = String(kv[1]);
+    r.appendChild(a); r.appendChild(b); box.appendChild(r);
+  }
+  document.getElementById('setTheme').value = Settings.get().theme;
+  document.getElementById('setAutosave').checked = !!Settings.get().autosave;
+  document.getElementById('setWarn').checked = Settings.get().warn !== false;
+}
+function mnhrText() {
+  const meta = Projects.meta(State.currentProjectId);
+  return JSON.stringify({ mnhr: 1, engine: 'Alpha 7.5', name: meta ? meta.name : 'Dự án', savedAt: Date.now(), data: serialize() });
+}
+function downloadMnhr() {
+  try {
+    const meta = Projects.meta(State.currentProjectId);
+    const name = ((meta && meta.name) || 'du-an').replace(/[^\w\-]+/g, '_').slice(0, 40) || 'du-an';
+    const url = URL.createObjectURL(new Blob([mnhrText()], { type: 'application/octet-stream' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = name + '.mnhr'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 2000);
+    toast('Đã tạo ' + name + '.mnhr', 'ok');
+  } catch (e) { toast('Xuất .mnhr thất bại: ' + ((e && e.message) || e), 'err', 5000); }
+}
+async function copyMnhr() {
+  const t = mnhrText();
+  try { await navigator.clipboard.writeText(t); toast('Đã copy vào bảng nhớ tạm (' + fmtSize(t.length) + ')', 'ok'); }
+  catch (e) {
+    const ta = document.getElementById('mnhrPaste');
+    ta.value = t; ta.focus(); ta.select();
+    try { document.execCommand('copy'); toast('Đã copy (' + fmtSize(t.length) + ')', 'ok'); }
+    catch (_) { toast('Trình duyệt chặn clipboard — hãy copy thủ công nội dung trong ô bên dưới', 'ok', 5000); }
+  }
+}
+async function importMnhrText(text) {
+  let obj;
+  try { obj = JSON.parse(String(text).trim()); } catch (e) { toast('Không phải file .mnhr hợp lệ', 'err', 4000); return; }
+  const data = obj && obj.data ? obj.data : obj;
+  if (!data || !Array.isArray(data.items)) { toast('File .mnhr thiếu dữ liệu dự án', 'err', 4000); return; }
+  if (!(await guardDirty())) return;
+  try {
+    const m = await Projects.create(((obj && obj.name) || 'Dự án') + ' (nhập)', data);
+    await loadProject(m);
+    document.getElementById('settingsModal').classList.remove('show');
+    toast('Đã nhập: ' + m.name, 'ok');
+  } catch (e) { toast('Nhập thất bại: ' + ((e && e.message) || e), 'err', 5000); }
+}
+function bindSettings() {
+  Settings.apply();
+  const $ = (id) => document.getElementById(id);
+  $('btnSettings').onclick = () => { renderSettings(); $('settingsModal').classList.add('show'); };
+  $('btnCloseSettings').onclick = () => $('settingsModal').classList.remove('show');
+  $('setTheme').onchange = (e) => Settings.set('theme', e.target.value);
+  $('setAutosave').onchange = (e) => Settings.set('autosave', e.target.checked);
+  $('setWarn').onchange = (e) => Settings.set('warn', e.target.checked);
+  $('btnMnhrSave').onclick = downloadMnhr;
+  $('btnMnhrCopy').onclick = copyMnhr;
+  $('btnMnhrLoad').onclick = async () => {
+    const f = await pickFiles({ accept: '*/*' });
+    if (f[0]) importMnhrText(await f[0].text());
+  };
+  $('btnMnhrPaste').onclick = async () => {
+    let t = $('mnhrPaste').value;
+    if (!t.trim()) { try { t = await navigator.clipboard.readText(); } catch (e) {} }
+    if (!t || !t.trim()) { toast('Chưa có nội dung — dán vào ô rồi bấm lại', 'err', 3500); return; }
+    importMnhrText(t);
+  };
+  setInterval(() => { if (Settings.get().autosave && State.dirty && !State.playing) saveProject(true); }, 30000);
+}
+
 function openProjectsModal() {
   const modal = document.getElementById('projectModal');
   const listEl = document.getElementById('projectList');
@@ -3925,6 +4040,7 @@ async function init() {
     setTimeout(resizeCanvas, 220);
   };
 
+  bindSettings();
   document.getElementById('btnProjects').onclick = openProjectsModal;
   document.getElementById('btnCloseProjects').onclick = () => document.getElementById('projectModal').classList.remove('show');
   document.getElementById('btnNewProject').onclick = async () => {
@@ -3936,11 +4052,11 @@ async function init() {
       await loadProject(p); openProjectsModal(); toast('Đã tạo dự án mới', 'ok');
     } catch (e) { toast('Tạo dự án thất bại: ' + ((e && e.message) || e), 'err'); }
   };
-  document.getElementById('btnSave').onclick = saveProject;
+  document.getElementById('btnSave').onclick = () => saveProject();
   window.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveProject(); }
   });
-  window.addEventListener('beforeunload', (e) => { if (State.dirty) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('beforeunload', (e) => { if (State.dirty && Settings.get().warn !== false) { e.preventDefault(); e.returnValue = ''; } });
 
   /* HITBOX MODAL */
   document.getElementById('btnHitboxAuto').onclick = hbAutoDetect;
