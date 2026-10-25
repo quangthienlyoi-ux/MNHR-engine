@@ -14,6 +14,8 @@
 
 - Logs Alpha 7.5 BẢN VÁ KHẨN CẤP (21/10/2026)
 
+- Logs Alpha 7.5 Remake (25/10/2026)
+
 ---
 
 - Use MNHR-engine Online in [MNHR-Engine Online](https://quangthienlyoi-ux.github.io/MNHR-engine/)
