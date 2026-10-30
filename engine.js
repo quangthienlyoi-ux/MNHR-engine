@@ -115,8 +115,12 @@ function MiniRuntime() {
   function bodyBoxes(it) {
     if (it.kind !== 'sprite') return getHitboxes(it);
     const fx = faceOf(it);
-    if (it.hitboxes && it.hitboxes.length) {
-      return cleanList(it.hitboxes).map(h => ({ x: it.x + h.ox * fx - h.w / 2, y: it.y + h.oy - h.h / 2, w: h.w, h: h.h }));
+    let L = hbList(it);
+    const def = (it.hitboxes && it.hitboxes.length) ? cleanList(it.hitboxes) : null;
+    const area = (a) => a.reduce((t, h) => t + h.w * h.h, 0);
+    if (L && def && L !== def && area(L) < 0.3 * area(def)) L = def;   // hitbox frame bất thường (quá nhỏ) → dùng mặc định
+    if (L) {
+      return L.map(h => ({ x: it.x + h.ox * fx - h.w / 2, y: it.y + h.oy - h.h / 2, w: h.w, h: h.h }));
     }
     if (it.hb) return [{ x: it.x + it.hb.ox * fx - it.hb.hw, y: it.y + it.hb.oy - it.hb.hh, w: it.hb.hw * 2, h: it.hb.hh * 2 }];
     return [{ x: it.x - it.w / 2, y: it.y - it.h / 2, w: it.w, h: it.h }];
@@ -508,6 +512,23 @@ function MiniRuntime() {
     }
   }
 
+  function pushSprites(state, it) {
+    if (it.control !== 'player' || !(it.hitboxes && it.hitboxes.length)) return;
+    const mine = bodyBoxes(it);
+    for (let i = 0; i < state.items.length; i++) {
+      const o = state.items[i];
+      if (o === it || o.kind !== 'sprite' || o._dead) continue;
+      const ob = bodyBoxes(o);
+      if (!anyHitboxOverlap(mine, ob)) continue;
+      const dir = o.x >= it.x ? 1 : -1;
+      const d = deepestHitboxPair(mine, ob, 'x', dir);
+      const before = o.x;
+      o.x += dir * Math.min(d ? d.depth : 1, 3);
+      depenetrate(state, o);
+      if (!isFinite(o.x)) o.x = before;
+    }
+  }
+
   function resolveCollisions(state, it, axis) {
     let mine = bodyBoxes(it);
     for (let i = 0; i < state.items.length; i++) {
@@ -723,6 +744,7 @@ function MiniRuntime() {
     }
     it._onGround = grounded;
     depenetrate(state, it);
+    pushSprites(state, it);
     if (it._onGround === false && grounded) it._onGround = true;
     it.x = clamp(it.x, -5000, 5000);
     if (!isFinite(it.x) || !isFinite(it.y) || (it.y > VH + 500 && it.y > killY(state))) respawnItem(it);
@@ -1382,7 +1404,8 @@ function pickFiles(opts) {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = opts.accept || 'image/*';
-    input.multiple = !!opts.multiple;
+    input.multiple = !!opts.multiple || !!opts.directory;
+    if (opts.directory) input.webkitdirectory = true;
     input.style.cssText = 'position:fixed;left:-10000px;top:0;';
     document.body.appendChild(input);
     let settled = false;
@@ -1448,6 +1471,64 @@ async function importAnimFrames(ctx2) {
   anim.frames.push({ url, img });
   renderAnimFrames(); renderInspector(); renderLayers(); scheduleSave();
   toast('Đã thêm 1 frame', 'ok');
+}
+const IMG_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+async function unzipImages(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('Không phải file ZIP hợp lệ');
+  const n = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const out = [], dec = new TextDecoder();
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const nl = dv.getUint16(p + 28, true), el = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+    const off = dv.getUint32(p + 42, true);
+    const name = dec.decode(buf.subarray(p + 46, p + 46 + nl));
+    p += 46 + nl + el + cl;
+    if (!IMG_RE.test(name) || name.split('/').some(sg => sg.startsWith('.') || sg === '__MACOSX')) continue;
+    const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+    let data = buf.subarray(start, start + csize);
+    if (method === 8) {
+      if (typeof DecompressionStream === 'undefined') throw new Error('Trình duyệt không giải nén được ZIP này — hãy dùng thư mục hoặc nén kiểu Store');
+      data = new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    } else if (method !== 0) continue;
+    const ext = name.split('.').pop().toLowerCase();
+    out.push({ name, blob: new Blob([data], { type: (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : ext === 'svg' ? 'image/svg+xml' : 'image/' + ext }) });
+  }
+  return out;
+}
+async function importAnimBulk(kind) {
+  if (!animCtx) return;
+  const item = State.items.find(i => i.id === animCtx.itemId);
+  const anim = item && item.animations[animCtx.key];
+  if (!anim) { toast('Animation không tồn tại', 'err'); return; }
+  let files = [];
+  try {
+    if (kind === 'zip') {
+      const f = await pickFiles({ accept: '.zip,application/zip,application/x-zip-compressed,*/*' });
+      if (!f.length) return;
+      toast('Đang giải nén…', 'ok', 1500);
+      files = await unzipImages(f[0]);
+    } else {
+      const f = await pickFiles({ accept: 'image/*', directory: true });
+      files = f.filter(x => IMG_RE.test(x.name) || (x.type || '').indexOf('image/') === 0).map(x => ({ name: x.webkitRelativePath || x.name, blob: x }));
+    }
+  } catch (e) { toast('Import thất bại: ' + ((e && e.message) || e), 'err', 5000); return; }
+  if (!files.length) { toast('Không tìm thấy ảnh nào', 'err'); return; }
+  files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  let n = 0;
+  for (const f of files) {
+    const url = await readAsDataURL(f.blob);
+    const img = url ? await loadImage(url) : null;
+    if (!img) continue;
+    anim.frames.push({ url, img }); n++;
+  }
+  renderAnimFrames(); renderInspector(); renderLayers(); scheduleSave();
+  toast('Đã thêm ' + n + '/' + files.length + ' frame (theo thứ tự tên file)', 'ok', 3500);
 }
 let sheetCtx = { file: null, url: null, img: null };
 async function importSpritesheetFile() {
@@ -1713,8 +1794,8 @@ function buildGridFromAlpha(alpha, W, H, cellSize, alphaThreshold) {
     grid[y] = [];
     for (let x = 0; x < cols; x++) {
       let solid = false;
-      const x0 = x * cellSize, y0 = y * cellSize;
-      const x1 = Math.min(W, x0 + cellSize), y1 = Math.min(H, y0 + cellSize);
+      const x0 = Math.floor(x * cellSize), y0 = Math.floor(y * cellSize);
+      const x1 = Math.min(W, Math.max(x0 + 1, Math.ceil((x + 1) * cellSize))), y1 = Math.min(H, Math.max(y0 + 1, Math.ceil((y + 1) * cellSize)));
       for (let py = y0; py < y1 && !solid; py++) {
         for (let px = x0; px < x1; px++) {
           if (alpha[py * W + px] > alphaThreshold) { solid = true; break; }
@@ -1812,7 +1893,13 @@ function hbAutoDetect() {
   if (!hitboxState.itemId) { toast('Không có item', 'err'); return; }
   const item = State.items.find(i => i.id === hitboxState.itemId);
   if (!item) { toast('Không tìm thấy item', 'err'); return; }
-  const cellSize = clamp(parseInt(document.getElementById('hitboxCell').value, 10) || 16, 2, 128);
+  let cellSize = parseFloat(document.getElementById('hitboxCell').value);
+  if (!isFinite(cellSize) || cellSize <= 0) cellSize = 16;
+  cellSize = clamp(cellSize, 0.25, 128);
+  if (cellSize < 1) {
+    if (!confirm('Việc đặt Cell Size dưới 1 sẽ không làm HitBox chính xác hơn bao nhiêu nhưng có thể tiềm ẩn rủi ro lỗi engine.\nVẫn tiếp tục?')) return;
+    if ((hitboxState.W / cellSize) * (hitboxState.H / cellSize) > 1500000) { toast('Cell Size quá nhỏ so với kích thước ảnh, hãy tăng lên', 'err', 4000); return; }
+  }
   const alphaThr = clamp(parseInt(document.getElementById('hitboxAlpha').value, 10) || 10, 0, 255);
   const allFrames = document.getElementById('hitboxAllFrames').checked;
 
@@ -2905,6 +2992,8 @@ function onPointerDown(e) {
     if (w.x >= b.x && w.x <= b.x + b.w && w.y >= b.y && w.y <= b.y + b.h) {
       selectItem(item.id);
       State.drag = { id: item.id, dx: w.x - item.x, dy: w.y - item.y };
+      cancelHold();
+      State.hold = { x: e.clientX, y: e.clientY, t: setTimeout(() => { State.hold = null; State.drag = null; duplicateItem(item.id); }, 650) };
       try { canvas.setPointerCapture(e.pointerId); } catch(_){}
       return;
     }
@@ -2979,6 +3068,7 @@ function onPointerMove(e) {
     updateCamInfo();
     return;
   }
+  if (State.hold && Math.hypot(e.clientX - State.hold.x, e.clientY - State.hold.y) > 10) cancelHold();
   if (!State.drag) return;
   const p = toStage(e.clientX, e.clientY);
   const w = toWorld(p.x, p.y);
@@ -2999,6 +3089,7 @@ function onPointerUp(e) {
     if (key) { State.keys[key] = false; State.pointerToBtn.delete(e.pointerId); }
     return;
   }
+  cancelHold();
   if (State.uiDrag) { State.uiDrag = null; scheduleSave(); return; }
   if (State.panStart) { State.panStart = null; return; }
   if (State.drag) { State.drag = null; renderInspector(); scheduleSave(); }
@@ -3327,7 +3418,74 @@ function updateSaveBtn() {
   b.textContent = saving ? 'Đang lưu…' : (State.dirty ? 'Lưu •' : 'Lưu');
   b.classList.toggle('dirty', !!State.dirty);
 }
-function scheduleSave() { State.dirty = true; updateSaveBtn(); }   // chỉ đánh dấu "chưa lưu"
+/* ---------- UNDO / REDO (snapshot, ảnh được tham chiếu để nhẹ bộ nhớ) ---------- */
+const Hist = { stack: [], idx: -1, timer: null, busy: false, urls: [], map: new Map() };
+function histSnap() {
+  return JSON.stringify(serialize(), (k, v) => {
+    if (k === 'url' && typeof v === 'string' && v.length > 200) {
+      let i = Hist.map.get(v);
+      if (i == null) { i = Hist.urls.length; Hist.urls.push(v); Hist.map.set(v, i); }
+      return '\u0001' + i;
+    }
+    return v;
+  });
+}
+function histParse(str) {
+  return JSON.parse(str, (k, v) => (typeof v === 'string' && v.charCodeAt(0) === 1) ? Hist.urls[+v.slice(1)] : v);
+}
+function updateHistBtns() {
+  const u = document.getElementById('btnUndo'), r = document.getElementById('btnRedo');
+  if (u) u.disabled = Hist.idx <= 0;
+  if (r) r.disabled = Hist.idx >= Hist.stack.length - 1;
+}
+function histPush() {
+  Hist.timer = null;
+  if (Hist.busy || State.playing) return;
+  const snap = histSnap();
+  if (Hist.stack[Hist.idx] === snap) return;
+  Hist.stack.length = Hist.idx + 1;
+  Hist.stack.push(snap);
+  if (Hist.stack.length > 60) Hist.stack.shift();
+  Hist.idx = Hist.stack.length - 1;
+  updateHistBtns();
+}
+function histReset() { clearTimeout(Hist.timer); Hist.timer = null; Hist.stack = [histSnap()]; Hist.idx = 0; updateHistBtns(); }
+function histGo(step) {
+  if (State.playing) { toast('Hãy dừng game trước khi Undo/Redo', 'err'); return; }
+  if (Hist.timer) { clearTimeout(Hist.timer); histPush(); }
+  const i = Hist.idx + step;
+  if (i < 0 || i >= Hist.stack.length) return;
+  Hist.busy = true;
+  try {
+    const sel = State.selectedId;
+    deserialize(histParse(Hist.stack[i]));
+    if (sel && State.items.some(x => x.id === sel)) selectItem(sel);
+    Hist.idx = i; State.dirty = true; updateSaveBtn();
+  } catch (e) { console.error(e); toast('Undo/Redo lỗi: ' + ((e && e.message) || e), 'err'); }
+  finally { Hist.busy = false; }
+  updateHistBtns();
+}
+function scheduleSave() {   // đánh dấu "chưa lưu" + ghi lịch sử Undo
+  State.dirty = true; updateSaveBtn();
+  if (Hist.busy || State.playing) return;
+  clearTimeout(Hist.timer);
+  Hist.timer = setTimeout(histPush, 350);
+}
+
+/* ---------- COPY item bằng nhấn giữ ---------- */
+function cancelHold() { if (State.hold) { clearTimeout(State.hold.t); State.hold = null; } }
+function duplicateItem(id) {
+  const data = serialize();
+  const d = data.items.find(i => i.id === id);
+  if (!d) return;
+  const c = JSON.parse(JSON.stringify(d));
+  c.id = uid(); c.name = (d.name || 'Item') + ' (copy)'; c.x += 24; c.y += 24;
+  data.items.push(c);
+  deserialize(data);
+  selectItem(c.id);
+  scheduleSave();
+  toast('Đã copy: ' + c.name, 'ok');
+}
 async function saveProject(silent) {
   if (!State.currentProjectId || saving) return false;
   saving = true; updateSaveBtn();
@@ -3357,6 +3515,7 @@ async function loadProject(meta) {
   deserialize(data || Projects.empty());
   State.editCam = { x: VW/2, y: VH/2 };
   State.dirty = false; updateSaveBtn(); updateCamInfo();
+  histReset();
 }
 
 /* ============================================================
@@ -4053,6 +4212,18 @@ async function init() {
     } catch (e) { toast('Tạo dự án thất bại: ' + ((e && e.message) || e), 'err'); }
   };
   document.getElementById('btnSave').onclick = () => saveProject();
+  document.getElementById('btnUndo').onclick = () => histGo(-1);
+  document.getElementById('btnRedo').onclick = () => histGo(1);
+  document.getElementById('btnAddFolder').onclick = () => importAnimBulk('dir');
+  document.getElementById('btnAddZip').onclick = () => importAnimBulk('zip');
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const t = e.target && e.target.tagName;
+    if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT') return;
+    const k = (e.key || '').toLowerCase();
+    if (k === 'z') { e.preventDefault(); histGo(e.shiftKey ? 1 : -1); }
+    else if (k === 'y') { e.preventDefault(); histGo(1); }
+  });
   window.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveProject(); }
   });
