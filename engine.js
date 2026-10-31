@@ -1,5 +1,5 @@
 /* ============================================================
-   MNHR-engine — engine.js Alpha 7.5
+   MNHR-engine — engine.js Alpha 8
    Auto-detect đa frame + Hệ thống Biến (Events)
    ============================================================ */
 window.MNHR = (function () {
@@ -120,7 +120,13 @@ function MiniRuntime() {
     const area = (a) => a.reduce((t, h) => t + h.w * h.h, 0);
     if (L && def && L !== def && area(L) < 0.3 * area(def)) L = def;   // hitbox frame bất thường (quá nhỏ) → dùng mặc định
     if (L) {
-      return L.map(h => ({ x: it.x + h.ox * fx - h.w / 2, y: it.y + h.oy - h.h / 2, w: h.w, h: h.h }));
+      let dy = 0;   // neo "chân": đáy hitbox frame trùng đáy hitbox mặc định → đổi frame không làm lún/nổi
+      const bot = (a) => a.reduce((m, h) => Math.max(m, h.oy + h.h / 2), -Infinity);
+      if (L !== def) {
+        if (def) dy = bot(def) - bot(L);
+        else if (it.hb) dy = (it.hb.oy + it.hb.hh) - bot(L);
+      }
+      return L.map(h => ({ x: it.x + h.ox * fx - h.w / 2, y: it.y + h.oy + dy - h.h / 2, w: h.w, h: h.h }));
     }
     if (it.hb) return [{ x: it.x + it.hb.ox * fx - it.hb.hw, y: it.y + it.hb.oy - it.hb.hh, w: it.hb.hw * 2, h: it.hb.hh * 2 }];
     return [{ x: it.x - it.w / 2, y: it.y - it.h / 2, w: it.w, h: it.h }];
@@ -513,17 +519,19 @@ function MiniRuntime() {
   }
 
   function pushSprites(state, it) {
-    if (it.control !== 'player' || !(it.hitboxes && it.hitboxes.length)) return;
+    if (it._dead || !(it.hitboxes && it.hitboxes.length)) return;
+    const isPlayer = it.control === 'player';
     const mine = bodyBoxes(it);
     for (let i = 0; i < state.items.length; i++) {
       const o = state.items[i];
-      if (o === it || o.kind !== 'sprite' || o._dead) continue;
+      if (o === it || o.kind !== 'sprite' || o._dead || o.noPush) continue;
+      if (!isPlayer && o.control === 'player') continue;   // bot/NPC không đẩy được người chơi
       const ob = bodyBoxes(o);
       if (!anyHitboxOverlap(mine, ob)) continue;
-      const dir = o.x >= it.x ? 1 : -1;
+      let dir = o.x > it.x ? 1 : (o.x < it.x ? -1 : (state.items.indexOf(o) > state.items.indexOf(it) ? 1 : -1));
       const d = deepestHitboxPair(mine, ob, 'x', dir);
       const before = o.x;
-      o.x += dir * Math.min(d ? d.depth : 1, 3);
+      o.x += dir * Math.min(d ? d.depth : 1, isPlayer ? 3 : 1.5);
       depenetrate(state, o);
       if (!isFinite(o.x)) o.x = before;
     }
@@ -635,6 +643,8 @@ function MiniRuntime() {
       if (minDist > range * 0.65)      it._vx = it._facing * (BASE_SPEED * it.speed * 0.7);
       else if (minDist < 50)           it._vx = -it._facing * (BASE_SPEED * it.speed * 0.5);
       else                              it._vx = 0;
+    } else if (patrolRange <= 0) {
+      it._vx = 0;   // phạm vi tuần = 0 → đứng yên (không tuần tra)
     } else {
       if (it.x > it._patrolOrigin + patrolRange) it._patrolDir = -1;
       if (it.x < it._patrolOrigin - patrolRange) it._patrolDir = 1;
@@ -1988,7 +1998,7 @@ function makeSprite(o) {
       speed: 8, bulletW: 14, bulletH: 14,
       useGravity: false, bulletGravity: 5
     },
-    botRange: 150, botPatrol: 80,
+    botRange: 150, botPatrol: 80, noPush: false,
     speed: 1, jumpPower: 1, gravity: 1,
     hp: 92, maxHp: 92, iframe: 1,
     _vx: 0, _vy: 0, _onGround: false, _facing: 1,
@@ -2609,6 +2619,7 @@ function renderSpriteInspector(root, item) {
     if (v === 'bot' && item.shoot && !item.shoot.enabled) item.shoot.enabled = true;
     renderInspector(); renderLayers();
   })));
+  root.appendChild(row('Không thể bị đẩy', checkbox(!!item.noPush, v => { item.noPush = v; scheduleSave(); })));
   root.appendChild(row('Camera theo', checkbox(item.camera, v => {
     item.camera = v;
     if (v) for (const o of State.items) if (o !== item && o.kind === 'sprite') o.camera = false;
@@ -3273,6 +3284,7 @@ function serialize() {
           },
           botRange: it.botRange != null ? it.botRange : 150,
           botPatrol: it.botPatrol != null ? it.botPatrol : 80,
+          noPush: !!it.noPush,
           speed: it.speed, jumpPower: it.jumpPower, gravity: it.gravity,
           hp: it.hp, maxHp: it.maxHp, iframe: it.iframe
         };
@@ -3361,6 +3373,7 @@ function deserialize(data) {
         animations, shoot,
         botRange: d.botRange != null ? d.botRange : 150,
         botPatrol: d.botPatrol != null ? d.botPatrol : 80,
+        noPush: !!d.noPush,
         speed: d.speed, jumpPower: d.jumpPower, gravity: d.gravity,
         hp: d.hp, maxHp: d.maxHp || d.hp, iframe: d.iframe
       });
@@ -3438,6 +3451,14 @@ function updateHistBtns() {
   if (u) u.disabled = Hist.idx <= 0;
   if (r) r.disabled = Hist.idx >= Hist.stack.length - 1;
 }
+const HIST_MAX_BYTES = 40e6;
+function histGC() {   // bỏ ảnh không còn bước Undo nào dùng
+  const used = new Set(), re = /\\u0001(\d+)/g;
+  for (const t of Hist.stack) { let m; re.lastIndex = 0; while ((m = re.exec(t))) used.add(+m[1]); }
+  for (let i = 0; i < Hist.urls.length; i++) {
+    if (Hist.urls[i] != null && !used.has(i)) { Hist.map.delete(Hist.urls[i]); Hist.urls[i] = null; }
+  }
+}
 function histPush() {
   Hist.timer = null;
   if (Hist.busy || State.playing) return;
@@ -3445,13 +3466,17 @@ function histPush() {
   if (Hist.stack[Hist.idx] === snap) return;
   Hist.stack.length = Hist.idx + 1;
   Hist.stack.push(snap);
-  if (Hist.stack.length > 60) Hist.stack.shift();
+  let dropped = false, total = 0;
+  for (const t of Hist.stack) total += t.length;
+  while (Hist.stack.length > 1 && (Hist.stack.length > 60 || total > HIST_MAX_BYTES)) { total -= Hist.stack.shift().length; dropped = true; }
   Hist.idx = Hist.stack.length - 1;
+  if (dropped) histGC();
   updateHistBtns();
 }
 function histReset() { clearTimeout(Hist.timer); Hist.timer = null; Hist.stack = [histSnap()]; Hist.idx = 0; updateHistBtns(); }
 function histGo(step) {
   if (State.playing) { toast('Hãy dừng game trước khi Undo/Redo', 'err'); return; }
+  if (document.querySelector('.modal.show')) { toast('Hãy đóng cửa sổ đang mở trước khi Undo/Redo', 'err'); return; }
   if (Hist.timer) { clearTimeout(Hist.timer); histPush(); }
   const i = Hist.idx + step;
   if (i < 0 || i >= Hist.stack.length) return;
@@ -3474,14 +3499,30 @@ function scheduleSave() {   // đánh dấu "chưa lưu" + ghi lịch sử Undo
 
 /* ---------- COPY item bằng nhấn giữ ---------- */
 function cancelHold() { if (State.hold) { clearTimeout(State.hold.t); State.hold = null; } }
+function cloneItem(it) {
+  const c = {};
+  for (const k in it) {
+    const v = it[k];
+    if (k[0] === '_') continue;
+    if (k === 'animations') {
+      c.animations = {};
+      for (const a in v) c.animations[a] = Object.assign({}, v[a], { frames: v[a].frames.map(f => Object.assign({}, f, { hitboxes: (f.hitboxes || []).map(h => Object.assign({}, h)) })) });
+    } else if (k === 'tex') {
+      c.tex = {}; for (const t in v) c.tex[t] = v[t] ? Object.assign({}, v[t]) : v[t];
+    } else if (k === 'events' || k === 'hitboxes' || k === 'hb' || k === 'shoot') c[k] = JSON.parse(JSON.stringify(v));
+    else c[k] = v;
+  }
+  return c;
+}
 function duplicateItem(id) {
-  const data = serialize();
-  const d = data.items.find(i => i.id === id);
-  if (!d) return;
-  const c = JSON.parse(JSON.stringify(d));
-  c.id = uid(); c.name = (d.name || 'Item') + ' (copy)'; c.x += 24; c.y += 24;
-  data.items.push(c);
-  deserialize(data);
+  const src = State.items.find(i => i.id === id);
+  if (!src) return;
+  const isPlayer = src.kind === 'sprite' && src.control === 'player';
+  if (!confirm('Copy "' + (src.name || 'Item') + '"?' + (isPlayer ? '\nBản sao của nhân vật điều khiển sẽ là Bot đứng yên (không bắn, không camera).' : ''))) return;
+  const base = src.kind === 'sprite' ? makeSprite({}) : makeBlock({});
+  const c = Object.assign(base, cloneItem(src), { id: uid(), name: (src.name || 'Item') + ' (copy)', x: src.x + 24, y: src.y + 24 });
+  if (isPlayer) { c.control = 'bot'; c.camera = false; c.botPatrol = 0; c.botRange = 0; c.shoot.enabled = false; }
+  State.items.push(c);
   selectItem(c.id);
   scheduleSave();
   toast('Đã copy: ' + c.name, 'ok');
@@ -3554,7 +3595,7 @@ async function renderSettings() {
   const lines = [
     ['Dự án', meta ? meta.name : '-'], ['Nhân vật / Bot', st.sprites], ['Khối', st.blocks],
     ['Frame ảnh', st.frames + ' (~' + fmtSize(st.bytes) + ')'], ['Hitbox', st.hb], ['Sự kiện', st.events],
-    ['Dung lượng dự án', meta ? fmtSize(meta.size || 0) : '-'], ['Nơi lưu', Store.name()], ['Phiên bản', 'Alpha 7.5']
+    ['Dung lượng dự án', meta ? fmtSize(meta.size || 0) : '-'], ['Nơi lưu', Store.name()], ['Phiên bản', 'Alpha 8']
   ];
   try {
     if (navigator.storage && navigator.storage.estimate) {
@@ -3576,7 +3617,7 @@ async function renderSettings() {
 }
 function mnhrText() {
   const meta = Projects.meta(State.currentProjectId);
-  return JSON.stringify({ mnhr: 1, engine: 'Alpha 7.5', name: meta ? meta.name : 'Dự án', savedAt: Date.now(), data: serialize() });
+  return JSON.stringify({ mnhr: 1, engine: 'Alpha 8', name: meta ? meta.name : 'Dự án', savedAt: Date.now(), data: serialize() });
 }
 function downloadMnhr() {
   try {
@@ -3834,6 +3875,7 @@ const Exporter = (function () {
     L.push('        bulletGravity:sh.bulletGravity!=null?sh.bulletGravity:5 },');
     L.push('      botRange:d.botRange!=null?d.botRange:150,');
     L.push('      botPatrol:d.botPatrol!=null?d.botPatrol:80,');
+    L.push('      noPush:!!d.noPush,');
     L.push('      speed:d.speed, jumpPower:d.jumpPower, gravity:d.gravity,');
     L.push('      hp:d.hp, maxHp:d.maxHp||d.hp, iframe:d.iframe,');
     L.push('      _vx:0,_vy:0,_onGround:false,_facing:1,_state:"idle",_invuln:0,_dead:false,');
@@ -4311,7 +4353,7 @@ async function init() {
   await loadProject(meta);
   updateCamInfo();
   requestAnimationFrame(loop);
-  toast('MNHR-engine Alpha 7.5 · lưu trữ: ' + Store.name(), 'ok', 2800);
+  toast('MNHR-engine Alpha 8 · lưu trữ: ' + Store.name(), 'ok', 2800);
 }
 
 return {
